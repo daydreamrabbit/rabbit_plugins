@@ -2,7 +2,7 @@
 
 BookOasis용 AniList 스타일 상세페이지 렌더러입니다. Detail Studio의 메타데이터 처리 기반을 사용하되, 별도 플러그인 ID `rabbit_plugins`로 동작합니다.
 
-- 플러그인 버전: `0.3.17`
+- 플러그인 버전: `1.0.0`
 - 1차 개발 상태: 완료
 - 라이선스: GNU AGPL v3 (`LICENSE` 참조)
 
@@ -39,7 +39,7 @@ BookOasis용 AniList 스타일 상세페이지 렌더러입니다. Detail Studio
 plugins/metadata/rabbit_plugins/
 ```
 
-BookOasis의 **설정 → 플러그인 관리 → 도서 상세페이지 렌더러**에서 사용할 세션에 `Rabbit Plugins · 상세페이지`를 선택합니다. 기존 Detail Studio 설정과 데이터는 변경하지 않습니다.
+플러그인 매니저의 **저장소 URL 설치**에 `https://github.com/daydreamrabbit/rabbit_plugins`를 입력하고 **저장소 설치**를 누르면 기본 브랜치의 ZIP을 내려받아 설치·활성화합니다. 그다음 BookOasis의 **설정 → 플러그인 관리 → 도서 상세페이지 렌더러**에서 사용할 세션에 `Rabbit Plugins · 상세페이지`를 선택합니다. 기존 Detail Studio 설정과 데이터는 변경하지 않습니다.
 
 홈 화면 위젯을 쓰려면 **설정 → 내 설정**에서 **홈 화면을 플러그인 배치 모드로 전환**을 켜고 저장한 다음, 홈 화면의 **위젯 추가 → 라이브러리별 신규 도서**를 선택합니다. 이 기능에는 BookOasis의 플러그인 대시보드 번들 지원이 필요합니다.
 

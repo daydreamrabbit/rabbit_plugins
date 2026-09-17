@@ -16,7 +16,7 @@ from xml.etree import ElementTree as ET
 from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 
-PLUGIN_VERSION = '0.3.17'
+PLUGIN_VERSION = '1.0.0'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 RELATION_FIELDS = {
     'main_story': 'relationships_main_story',
@@ -282,6 +282,9 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
 
     def search(self, db_type, query):
         return []
+
+    def apply(self, db_type, book_id, item_data):
+        return False, 'Rabbit Plugins is a detail renderer and does not apply metadata.'
 
     def apply(self, db_type, book_id, item_data):
         return False, '상세 화면의 메타정보 탭에서 수정해 주세요.'
