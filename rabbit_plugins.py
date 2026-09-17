@@ -16,7 +16,7 @@ from xml.etree import ElementTree as ET
 from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 
-PLUGIN_VERSION = '1.0.0'
+PLUGIN_VERSION = '1.0.1'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 RELATION_FIELDS = {
     'main_story': 'relationships_main_story',
@@ -188,6 +188,23 @@ def _comicinfo_metadata(book):
         str(book.get('file_mtime') or ''),
         str(book.get('file_size') or ''),
     ))
+
+
+def _localized_series_sql(gateway):
+    engine = str(getattr(gateway, '_engine', 'sqlite')).casefold()
+    if engine in ('mariadb', 'mysql'):
+        columns = gateway.fetch_all('SHOW COLUMNS FROM books')
+        name = 'Field'
+    else:
+        columns = gateway.fetch_all('PRAGMA table_info(books)')
+        name = 'name'
+    if any(str(row.get(name) or '').casefold() == 'localized_series' for row in columns):
+        return 'b.localized_series'
+    return 'NULL'
+
+
+def _localized_series_value(book):
+    return str(book.get('localized_series') or _comicinfo_metadata(book).get('localized_series') or '').strip()
 
 
 def _comicinfo_summary(element):
@@ -491,13 +508,16 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             if mode == 'discovery' and result.get('success'):
                 return {'success': True, 'relations': {}, 'recommendations': result.get('items', [])}
             return result
+        localized_series_sql = _localized_series_sql(gateway)
         target = gateway.fetch_one(
-            'SELECT b.id, b.series_name, b.series_alias, b.localized_series, b.library_id, '
-            'b.author, b.genre, b.tags, b.books_lv FROM books b '
+            'SELECT b.id, b.series_name, b.series_alias, ' + localized_series_sql + ' AS localized_series, '
+            'b.library_id, b.author, b.genre, b.tags, b.books_lv, '
+            'b.file_path, b.file_format, b.file_mtime, b.file_size FROM books b '
             'WHERE b.id = ? AND COALESCE(b.is_deleted, 0) = 0' + permission,
             (book_id, *libraries))
         if not target or not visible(target):
             return {'success': False, 'error': '도서를 찾을 수 없거나 접근 권한이 없습니다.'}
+        target['localized_series'] = _localized_series_value(target)
 
         if mode == 'files':
             config = self.get_plugin_config('general', {})
@@ -894,9 +914,12 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         local_books = []
         if korean_titles:
             placeholders = ','.join('?' for _ in korean_titles)
+            localized_series_sql = _localized_series_sql(gateway)
             local_books = gateway.fetch_all(
-                'SELECT b.id, b.library_id, b.series_name, b.series_alias, b.localized_series, b.cover_image, '
-                'b.author, b.publisher, b.publication_status, b.books_lv, b.genre, b.tags '
+                'SELECT b.id, b.library_id, b.series_name, b.series_alias, '
+                + localized_series_sql + ' AS localized_series, b.cover_image, '
+                'b.author, b.publisher, b.publication_status, b.books_lv, b.genre, b.tags, '
+                'b.file_path, b.file_format, b.file_mtime, b.file_size '
                 'FROM books b WHERE COALESCE(b.is_deleted, 0) = 0 AND '
                 '(b.series_name IN (' + placeholders + ') OR b.series_alias IN (' + placeholders + '))' +
                 permission + ' ORDER BY b.id',
@@ -920,6 +943,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             matches = []
             for title in titles:
                 for book in books_by_title.get(_title_key(title), []):
+                    book['localized_series'] = _localized_series_value(book)
                     if book['localized_series'] and _title_key(book['localized_series']) == series['native_key'] and (
                         not check_rating or check_rating(db_type, book['id'])
                     ) and book not in matches:
@@ -993,8 +1017,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         order = 'b.id DESC'
         if random_order:
             order = 'RAND()' if getattr(gateway, '_engine', '') in ('mariadb', 'mysql') else 'RANDOM()'
+        localized_series_sql = _localized_series_sql(gateway)
         return gateway.fetch_all(
-            'SELECT b.id, b.series_name, b.series_alias, b.localized_series, b.library_id, b.author, '
+            'SELECT b.id, b.series_name, b.series_alias, ' + localized_series_sql + ' AS localized_series, '
+            'b.library_id, b.author, '
             'b.books_lv, b.genre, b.tags, b.cover_image, '
             '(SELECT fb.cover_image FROM books fb WHERE fb.series_name = b.series_name '
             'AND fb.library_id = b.library_id AND COALESCE(fb.is_deleted, 0) = 0 '
