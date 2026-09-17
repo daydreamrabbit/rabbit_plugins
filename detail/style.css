@@ -348,7 +348,7 @@
 .ds-book-open:focus-visible .ds-book-overlay { opacity: 1; }
 .ds-book-title { display: -webkit-box; margin-top: 8px; overflow: hidden; color: var(--ds-text); font-size: 12px; font-weight: 600; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .ds-book-subtitle { display: block; margin-top: 3px; overflow: hidden; color: var(--ds-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.ds-book-progress { display: flex; align-items: center; gap: 4px; width: min(100%, 92px); margin-top: 5px; }
+.ds-book-progress { display: flex; align-items: center; gap: 4px; width: min(100%, 56px); margin-top: 3px; }
 .ds-book progress { display: block; flex: 1; min-width: 0; height: 2px; margin: 0; appearance: none; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--ds-muted) 24%, var(--ds-panel)); }
 .ds-book progress::-webkit-progress-bar { border-radius: 999px; background: color-mix(in srgb, var(--ds-muted) 24%, var(--ds-panel)); }
 .ds-book progress::-webkit-progress-value { border-radius: 999px; background: var(--ds-accent); transition: width .25s ease; }
