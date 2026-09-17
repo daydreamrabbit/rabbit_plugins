@@ -284,9 +284,6 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         return []
 
     def apply(self, db_type, book_id, item_data):
-        return False, 'Rabbit Plugins is a detail renderer and does not apply metadata.'
-
-    def apply(self, db_type, book_id, item_data):
         return False, '상세 화면의 메타정보 탭에서 수정해 주세요.'
 
     def run_context_menu_action(self, db_type, action_id, context):
