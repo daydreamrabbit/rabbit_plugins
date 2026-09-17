@@ -135,9 +135,25 @@
           context: {},
         }),
       });
-      const data = await response.json();
-      if (!response.ok || !data.success) throw new Error(data.error || 'Series.db 최적화에 실패했습니다.');
+      const body = await response.text();
+      let data;
+      try {
+        data = JSON.parse(body);
+      } catch (_) {
+        const contentType = response.headers.get('content-type') || '알 수 없는 형식';
+        const redirected = response.redirected ? `, 최종 주소: ${response.url}` : '';
+        if ([502, 503, 504].includes(response.status)) {
+          throw new Error(`HTTP ${response.status}: 서버나 프록시가 JSON 대신 ${contentType} 응답을 반환했습니다${redirected}. 큰 DB 처리 중 응답 시간이 초과됐을 수 있습니다. 작업이 계속 실행 중일 수 있으니 서버 상태를 확인한 뒤 다시 실행해 주세요.`);
+        }
+        throw new Error(`최적화 API가 JSON 대신 ${contentType} 응답을 반환했습니다 (HTTP ${response.status}${redirected}). 네트워크 탭의 응답 내용을 확인해 주세요.`);
+      }
+      if (!response.ok || !data.success) {
+        const target = data.database_path ? ` 대상 경로: ${data.database_path}` : '';
+        const backup = data.backup_path ? ` 백업: ${data.backup_path}` : '';
+        throw new Error((data.error || 'Series.db 최적화에 실패했습니다.') + target + backup);
+      }
       status.textContent = data.message || 'Series.db 최적화를 완료했습니다.';
+      if (data.database_path) status.textContent += ` 대상: ${data.database_path}`;
       if (data.backup_path) status.textContent += ` 자동 백업: ${data.backup_path}`;
     } catch (error) {
       status.textContent = error.message || 'Series.db 최적화에 실패했습니다.';
@@ -146,4 +162,52 @@
       button.textContent = 'Series.db 최적화';
     }
   });
+})();
+
+(function () {
+  const form = root.closest('form.plugin-config-form');
+  if (!form) return;
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    const button = form.querySelector('button[type="submit"]');
+    const configData = {};
+    form.querySelectorAll('input, select').forEach(input => {
+      if (!input.name) return;
+      configData[input.name] = input.type === 'checkbox'
+        ? !!input.checked
+        : String(input.value ?? '').trim();
+    });
+
+    try {
+      if (button) {
+        button.disabled = true;
+        button.textContent = '저장 중...';
+      }
+      const response = await fetch('/api/media/metadata/plugins/save-config', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'general', plugin_id: pluginId, config: configData }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) throw new Error(result.error || '설정 저장에 실패했습니다.');
+      if (typeof window.showToast === 'function') {
+        window.showToast(result.message || 'Rabbit Plugins 설정을 저장했습니다.', 'success');
+      } else {
+        alert(result.message || 'Rabbit Plugins 설정을 저장했습니다.');
+      }
+    } catch (error) {
+      const message = error.message || 'Rabbit Plugins 설정을 저장하지 못했습니다.';
+      if (typeof window.showToast === 'function') window.showToast(message, 'error');
+      else alert(message);
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.innerHTML = '<i class="fa-regular fa-floppy-disk"></i> 설정 저장';
+      }
+    }
+  }, true);
 })();

@@ -16,7 +16,7 @@ from xml.etree import ElementTree as ET
 from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 
-PLUGIN_VERSION = '1.0.2'
+PLUGIN_VERSION = '1.0.3'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 RELATION_FIELDS = {
     'main_story': 'relationships_main_story',
@@ -292,7 +292,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         'subtitle': '선택한 라이브러리의 최근 추가 작품',
         'icon': 'fa-solid fa-square-plus',
         'order': 30,
-        'limit': 400,
+        'limit': 20,
         'sessions': ['general'],
         'layout': 'full',
     }
@@ -311,7 +311,9 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 return {'success': False, 'error': '관리자만 Series.db를 최적화할 수 있습니다.'}
             if db_type != 'general':
                 return {'success': False, 'error': '일반 도서 설정에서 실행해 주세요.'}
-            return self._optimize_series_db()
+            result = self._optimize_series_db()
+            result['database_path'] = str(self._series_db_path())
+            return result
         if action_id != 'save_detail_metadata':
             return {'success': False, 'error': '지원하지 않는 작업입니다.'}
         if not has_request_context() or session.get('role') != 'admin':
@@ -372,13 +374,18 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             if not cover_artist_supported and artist_changed else [],
         }
 
-    def _home_recently_added(self, db_type):
+    def _home_recently_added(self, db_type, limit=20):
         if not has_request_context() or not session.get('user_id'):
             return {'success': False, 'error': '로그인이 필요합니다.'}
         if session.get('is_default_password') == 1:
             return {'success': False, 'error': '비밀번호를 먼저 변경해 주세요.'}
         if str(db_type or '').strip().lower() != 'general':
             return {'success': False, 'error': '일반 도서 홈 위젯입니다.'}
+
+        try:
+            limit = min(20, max(1, int(limit)))
+        except (TypeError, ValueError):
+            limit = 20
 
         config = self.get_plugin_config('general', {})
         sections = config.get('home_library_sections', []) if isinstance(config, dict) else []
@@ -401,9 +408,9 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 continue
             library_id = str(section.get('library_id') or '').strip()
             try:
-                item_limit = min(20, max(1, int(section.get('limit', 5))))
+                item_limit = min(limit, 20, max(1, int(section.get('limit', 5))))
             except (TypeError, ValueError):
-                item_limit = 5
+                item_limit = min(limit, 5)
             if library_id in available and library_id not in seen:
                 selected.append((library_id, item_limit))
                 seen.add(library_id)
@@ -419,19 +426,25 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
 
         gateway = self.get_db_gateway('general')
         items = []
+        query = (
+            'SELECT id, library_id, title, title_alias, series_name, series_alias, author, publisher, '
+            'cover_image, cover_updated_at, file_format, total_pages, created_at FROM books '
+            'WHERE library_id = ? AND COALESCE(is_deleted, 0) = 0 '
+            'ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?'
+        )
         for library_id, item_limit in selected:
             library = available[library_id]
-            rows = gateway.fetch_all(
-                'SELECT id, library_id, title, title_alias, series_name, series_alias, author, publisher, '
-                'cover_image, cover_updated_at, file_format, total_pages, created_at FROM books '
-                'WHERE library_id = ? AND COALESCE(is_deleted, 0) = 0 '
-                'ORDER BY created_at DESC, id DESC LIMIT 1000',
-                (library_id,))
             by_series = {}
-            for row in rows:
-                series_name = str(row.get('series_name') or '').strip()
-                key = series_name or f"__single__:{row['id']}"
-                by_series.setdefault(key, row)
+            for offset in range(0, 1000, 100):
+                rows = gateway.fetch_all(query, (library_id, 100, offset))
+                for row in rows:
+                    series_name = str(row.get('series_name') or '').strip()
+                    key = series_name or f"__single__:{row['id']}"
+                    by_series.setdefault(key, row)
+                    if len(by_series) >= item_limit:
+                        break
+                if len(by_series) >= item_limit or len(rows) < 100:
+                    break
 
             recent = list(by_series.values())[:item_limit]
             items.append({
@@ -465,7 +478,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
     def get_dashboard_data(self, db_type, limit=12):
         # 홈 위젯 요청에는 book_id가 없고, 상세페이지의 파일/추천 요청에는 항상 들어온다.
         if has_request_context() and 'book_id' not in request.args:
-            return self._home_recently_added(db_type)
+            return self._home_recently_added(db_type, limit)
 
         # 공용 데이터 라우트에 login_required가 없으므로 여기서 반드시 검사한다.
         if not has_request_context() or not session.get('user_id'):

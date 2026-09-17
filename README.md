@@ -2,7 +2,7 @@
 
 BookOasis용 AniList 스타일 상세페이지 렌더러입니다. Detail Studio의 메타데이터 처리 기반을 사용하되, 별도 플러그인 ID `rabbit_plugins`로 동작합니다.
 
-- 플러그인 버전: `1.0.2`
+- 플러그인 버전: `1.0.3`
 - 1차 개발 상태: 완료
 - 라이선스: GNU AGPL v3 (`LICENSE` 참조)
 
@@ -23,7 +23,7 @@ BookOasis용 AniList 스타일 상세페이지 렌더러입니다. Detail Studio
 - Series.db의 관계 데이터를 본편, 전작, 후속작, 스핀오프, 외전, 리메이크, 각색, 기타 순서로 표시합니다.
 - Series.db에 연결된 작품이 실제 라이브러리에 스캔된 경우 표시하며, 다른 라이브러리에 있는 작품도 찾습니다.
 - 추천은 Series.db의 MangaUpdates 추천을 우선 사용하고, 보유한 추천작을 표시합니다. 작가·태그가 비슷한 작품도 더하며, 추천 결과가 없으면 장르나 태그가 겹치는 작품을 무작위로 표시합니다. 관련작품은 추천항목에서 제외합니다.
-- Series.db 경로를 설정할 수 있으며, 비워두면 `/app/db/series.full.sqlite`를 사용합니다. 설정의 최적화 버튼은 백업, 필요 공간 확인, 최적화, 무결성 검사를 수행합니다.
+- Series.db 경로를 설정할 수 있으며, 비워두면 `/app/db/series.full.sqlite`를 사용합니다. 사용자 지정 경로는 BookOasis 컨테이너 내부 경로여야 하고, DB 파일 및 백업을 쓸 수 있는 권한과 공간이 필요합니다. 설정의 최적화 버튼은 백업, 필요 공간 확인, 최적화, 무결성 검사를 수행합니다.
 - Series.db 제목 검색 인덱스는 `cache/rabbit_plugins_series_index.sqlite`에 생성하고 원본 DB가 바뀌면 다시 만듭니다.
 
 ### 홈 화면 위젯
