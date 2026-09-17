@@ -1,0 +1,281 @@
+:host {
+  display: block;
+  color: var(--app-text-primary, #e5e7eb);
+  font-family: inherit;
+}
+
+.rabbit-recent-books,
+.rabbit-recent-books * {
+  box-sizing: border-box;
+}
+
+.rabbit-recent-books {
+  width: 100%;
+  min-width: 0;
+}
+
+.rabbit-recent-books__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+
+.rabbit-recent-books__tabs {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 0.5rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.rabbit-recent-books__tabs::-webkit-scrollbar,
+.rabbit-recent-books__row::-webkit-scrollbar {
+  display: none;
+}
+
+.rabbit-recent-books__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--app-border, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+  background: var(--app-bg-card, #25272b);
+  color: var(--app-text-secondary, #b8c0cc);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.rabbit-recent-books__tab:hover {
+  color: var(--app-text-primary, #e5e7eb);
+  border-color: var(--app-accent, #3b82f6);
+}
+
+.rabbit-recent-books__tab[aria-selected="true"] {
+  border-color: var(--app-accent, #3b82f6);
+  background: color-mix(in srgb, var(--app-accent, #3b82f6) 18%, var(--app-bg-card, #25272b));
+  color: var(--app-text-primary, #e5e7eb);
+}
+
+.rabbit-recent-books__count {
+  color: var(--app-text-muted, #94a3b8);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+.rabbit-recent-books__nav {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.rabbit-recent-books__nav-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--app-border, rgba(255, 255, 255, 0.12));
+  border-radius: 4px;
+  background: var(--app-bg-card, #25272b);
+  color: var(--app-text-secondary, #b8c0cc);
+  font: inherit;
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.rabbit-recent-books__nav-button:hover:not(:disabled) {
+  border-color: var(--app-accent, #3b82f6);
+  background: var(--app-accent, #3b82f6);
+  color: var(--app-accent-contrast, #fff);
+}
+
+.rabbit-recent-books__nav-button:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.rabbit-recent-books__tab:focus-visible,
+.rabbit-recent-books__nav-button:focus-visible,
+.book-card:focus-visible {
+  outline: 2px solid var(--app-accent, #3b82f6);
+  outline-offset: 2px;
+}
+
+.rabbit-recent-books__row {
+  display: flex;
+  min-width: 0;
+  gap: 1.5rem;
+  overflow-x: auto;
+  padding: 0.5rem 0.2rem;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
+}
+
+.rabbit-recent-books__row:empty {
+  display: block;
+  min-height: 4rem;
+}
+
+.rabbit-recent-books__empty {
+  margin: 0;
+  padding: 2rem 0.5rem;
+  color: var(--app-text-muted, #94a3b8);
+  font-size: 0.86rem;
+  text-align: center;
+}
+
+.book-card {
+  position: relative;
+  display: flex;
+  flex: 0 0 var(--book-card-width, 160px);
+  flex-direction: column;
+  width: var(--book-card-width, 160px);
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--app-border-light, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+  background: var(--app-bg-card, #25272b);
+  color: var(--app-text-primary, #e5e7eb);
+  cursor: pointer;
+  transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.book-card:hover {
+  transform: translate3d(0, -6px, 0);
+  border-color: var(--app-accent, #3b82f6);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
+}
+
+.book-card-cover {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 160 / 233;
+  overflow: hidden;
+  background: var(--app-bg-sidebar, #1f2125);
+}
+
+.book-card-cover img {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.book-card-cover img.is-loaded {
+  opacity: 1;
+}
+
+.book-card-overlay {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  background: rgba(9, 13, 22, 0.7);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.book-card:hover .book-card-overlay {
+  opacity: 1;
+}
+
+.btn-resume-series {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  transform: translate(-50%, -50%) scale(0.8);
+  border: 0;
+  border-radius: 50%;
+  background: var(--app-accent, #3b82f6);
+  color: var(--app-accent-contrast, #fff);
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.book-card:hover .btn-resume-series {
+  transform: translate(-50%, -50%) scale(1);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.btn-resume-series svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.book-card-info {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.75rem 0.75rem 0.5rem;
+}
+
+.book-card-title {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--app-text-primary, #e5e7eb);
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1.35;
+  word-break: break-all;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+@media (max-width: 520px) {
+  .rabbit-recent-books__toolbar {
+    gap: 0.45rem;
+  }
+
+  .rabbit-recent-books__tabs {
+    gap: 0.35rem;
+  }
+
+  .rabbit-recent-books__tab {
+    padding-inline: 0.5rem;
+  }
+
+  .rabbit-recent-books__row {
+    gap: 0.8rem;
+  }
+}

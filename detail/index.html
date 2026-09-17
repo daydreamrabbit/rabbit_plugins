@@ -1,0 +1,124 @@
+<section class="ds" aria-label="도서 상세">
+  <div class="ds-backdrop" aria-hidden="true"><div class="ds-colorscape"><img data-colorscape-image alt=""></div></div>
+  <div class="ds-banner" data-banner hidden aria-hidden="true"><img alt=""></div>
+  <div class="ds-page">
+    <aside class="ds-sidebar">
+      <div class="ds-cover">
+        <img data-cover alt="">
+        <span data-no-cover hidden>표지 없음</span>
+      </div>
+
+      <div class="ds-actions">
+        <div class="ds-action-row">
+          <button type="button" class="ds-button ds-primary ds-read" data-action="read">
+            <i class="fa-solid fa-book-open" aria-hidden="true"></i>
+            <span data-read-label>시리즈 읽기</span>
+          </button>
+          <button type="button" class="ds-button ds-favorite" data-action="favorite" aria-pressed="false" aria-label="즐겨찾기">
+            <i class="fa-regular fa-heart" aria-hidden="true"></i>
+          </button>
+          <button type="button" class="ds-button ds-collection" data-action="collection" aria-label="컬렉션 추가" title="컬렉션 추가" aria-expanded="false" aria-controls="ds-collection-menu">
+            <i class="fa-solid fa-bookmark" aria-hidden="true"></i><i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div class="ds-collection-menu" id="ds-collection-menu" data-collection-menu role="menu" aria-label="컬렉션 선택" hidden></div>
+      </div>
+
+      <section class="ds-reading" aria-label="독서 진행률">
+        <div class="ds-reading-heading"><strong data-reading-state>읽기 전</strong><span data-percent></span></div>
+        <progress data-series-progress max="100" value="0" aria-label="시리즈 진행률"></progress>
+        <small data-reading-caption></small>
+        <div class="ds-current" data-current></div>
+      </section>
+
+      <section class="ds-info" aria-labelledby="ds-info-title">
+        <div class="ds-info-heading">
+          <h2 id="ds-info-title">상세정보</h2>
+          <div class="ds-info-controls">
+            <button type="button" class="ds-unlock-button" data-role="detail-unlock-metadata" data-action="unlock-metadata" aria-label="메타데이터 잠금 해제" title="메타데이터 잠금 해제" hidden>
+              <i class="fa-solid fa-lock-open" aria-hidden="true"></i><span>잠금 해제</span>
+            </button>
+            <button type="button" class="ds-edit-button" data-action="edit" aria-label="메타정보 편집" hidden>
+              <i class="fa-solid fa-pen" aria-hidden="true"></i>
+            </button>
+          </div>
+        </div>
+        <dl class="ds-facts" data-facts></dl>
+        <div class="ds-rating-info"><span>평점</span><div class="ds-stars" data-stars role="group" aria-label="도서 평점"></div></div>
+        <div class="ds-info-group" data-genres-block hidden>
+          <h3>Genres</h3><div class="ds-tags" data-genres></div>
+        </div>
+        <div class="ds-info-group" data-tags-block hidden>
+          <h3>Tags</h3><div class="ds-tags" data-tags></div>
+        </div>
+        <div class="ds-site-links" data-site-links hidden aria-label="관련 링크"></div>
+      </section>
+
+      <p class="ds-notice" data-notice role="status" aria-live="polite" hidden></p>
+    </aside>
+
+    <main class="ds-main">
+      <header class="ds-heading">
+        <div class="ds-library-path" data-library-path></div>
+        <h1 data-title></h1>
+        <p class="ds-original-title" data-original-title hidden></p>
+      </header>
+
+      <section class="ds-description" aria-label="책 소개">
+        <p class="ds-summary" data-summary></p>
+        <button type="button" class="ds-more" data-action="summary" aria-expanded="false" hidden>더 보기</button>
+      </section>
+
+      <section class="ds-edit-panel" data-edit-panel hidden>
+        <div class="ds-section-heading">
+          <div><h2>메타정보 편집</h2><p data-edit-caption></p></div>
+        </div>
+        <form data-edit-form>
+          <p class="ds-edit-scope" data-edit-scope></p>
+          <div class="ds-edit-grid">
+            <article class="ds-edit-card">
+              <div data-edit-fields></div>
+              <label class="ds-field">표지 이미지
+                <input type="file" name="cover_image" accept="image/jpeg,image/png,image/webp">
+                <small>JPG, PNG, WebP · 최대 10MB</small>
+              </label>
+            </article>
+            <article class="ds-edit-card">
+              <label class="ds-field ds-description-field">책 소개
+                <textarea name="summary" rows="14" maxlength="50000"></textarea>
+              </label>
+            </article>
+          </div>
+          <div class="ds-savebar">
+            <span>저장한 정보는 코어의 메타정보 저장 규칙을 따릅니다.</span>
+            <div>
+              <button type="button" class="ds-button" data-action="cancel-edit">취소</button>
+              <button type="submit" class="ds-button ds-primary">변경사항 저장</button>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <section class="ds-series" data-series-section hidden>
+        <div class="ds-section-heading">
+          <div><h2>시리즈 둘러보기</h2><p data-series-description></p></div>
+        </div>
+        <div class="ds-shelf" data-series-books></div>
+      </section>
+
+      <section class="ds-relations" data-relations-section hidden>
+        <div class="ds-section-heading">
+          <div><h2>관련작품</h2></div>
+        </div>
+        <div class="ds-books" data-relations></div>
+      </section>
+
+      <section class="ds-recommendations" data-recommendation-section hidden>
+        <div class="ds-section-heading">
+          <div><h2>추천항목</h2></div>
+        </div>
+        <div class="ds-books" data-recommendations></div>
+      </section>
+    </main>
+  </div>
+</section>

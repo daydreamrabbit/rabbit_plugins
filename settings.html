@@ -1,0 +1,46 @@
+<div class="rabbit-plugin-settings">
+  <section class="rabbit-setting">
+    <label class="rabbit-setting-toggle">
+      <input type="checkbox" name="support_summary_html" checked>
+      <span>ComicInfo 소개에 포함된 이미지 표시</span>
+    </label>
+    <p>켜면 CBZ/ZIP의 ComicInfo.xml Summary에서 이미지 태그를 읽어 소개에 표시합니다. 끄면 이미지와 태그 문구를 표시하지 않습니다.</p>
+  </section>
+
+  <section class="rabbit-setting">
+    <label class="rabbit-setting-label" for="rabbit-series-db-path">Series.db 경로</label>
+    <input id="rabbit-series-db-path" class="rabbit-setting-input" type="text" name="series_db_path" placeholder="/app/db/series.full.sqlite">
+    <p>BookOasis 컨테이너 안에서 접근할 경로를 입력하세요. 비워두면 <code>/app/db/series.full.sqlite</code>를 사용합니다.</p>
+  </section>
+
+  <section class="rabbit-setting">
+    <label class="rabbit-setting-label" for="rabbit-exclude-tags">제외할 태그</label>
+    <input id="rabbit-exclude-tags" class="rabbit-setting-input" type="text" name="exclude_tags" placeholder="성장, 요괴">
+    <p>쉼표(,)로 구분해 입력한 태그는 상세정보에서 숨깁니다.</p>
+  </section>
+
+  <section class="rabbit-setting">
+    <label class="rabbit-setting-label" for="rabbit-exclude-genres">제외할 장르</label>
+    <input id="rabbit-exclude-genres" class="rabbit-setting-input" type="text" name="exclude_genres" placeholder="판타지, 액션">
+    <p>쉼표(,)로 구분해 입력한 장르는 상세정보에서 숨깁니다.</p>
+  </section>
+
+  <section class="rabbit-setting rabbit-home-library-setting">
+    <div>
+      <span class="rabbit-setting-label">일반 도서 홈 화면 신규 도서</span>
+      <p>선택한 라이브러리가 각각 탭으로 표시됩니다. 각 탭에는 지정한 수만큼 신규 도서 카드가 나오며, 가로로 넘겨 볼 수 있습니다. BookOasis 설정의 ‘내 설정’ 탭에서 ‘홈 화면을 플러그인 배치 모드로 전환’을 켜고 저장한 다음, 홈 화면의 ‘위젯 추가’에서 ‘라이브러리별 신규 도서’를 추가하세요.</p>
+    </div>
+    <div id="rabbit-home-library-sections" class="rabbit-home-library-sections" aria-live="polite"></div>
+    <button id="rabbit-add-home-library" class="rabbit-add-library-button" type="button">
+      <i class="fa-solid fa-plus"></i> 라이브러리 추가
+    </button>
+    <input type="hidden" name="home_library_sections" value="[]">
+  </section>
+
+  <section class="rabbit-setting">
+    <span class="rabbit-setting-label">Series.db 자동 최적화</span>
+    <button class="rabbit-optimize-button" type="button">Series.db 최적화</button>
+    <p>관리자만 실행할 수 있습니다. 실행 전 자동 백업을 만들며, 이미 최적화된 DB는 변경하지 않습니다.</p>
+    <p class="rabbit-optimize-status" role="status" aria-live="polite"></p>
+  </section>
+</div>

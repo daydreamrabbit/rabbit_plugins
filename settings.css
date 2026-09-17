@@ -1,0 +1,25 @@
+.rabbit-plugin-settings { display: grid; gap: 1rem; color: var(--app-text-primary, #e5e7eb); }
+.rabbit-setting { display: grid; justify-items: start; gap: .45rem; }
+.rabbit-setting-toggle { display: flex; align-items: center; gap: .55rem; font-weight: 600; }
+.rabbit-setting-toggle input { accent-color: var(--app-accent, #3b82f6); }
+.rabbit-setting-label { font-weight: 600; }
+.rabbit-setting-input { width: min(100%, 520px); padding: .55rem .7rem; border: 1px solid rgba(148, 163, 184, .3); border-radius: 6px; background: rgba(15, 23, 42, .55); color: inherit; }
+.rabbit-setting p { margin: 0; color: var(--app-text-muted, #94a3b8); font-size: .8rem; line-height: 1.5; }
+.rabbit-setting code { color: var(--app-text-secondary, #cbd5e1); }
+.rabbit-home-library-setting { width: 100%; padding-top: 1rem; border-top: 1px solid rgba(148, 163, 184, .18); }
+.rabbit-home-library-sections { display: grid; gap: .55rem; width: min(100%, 640px); }
+.rabbit-home-library-row { display: grid; grid-template-columns: minmax(160px, 1fr) 130px auto; align-items: center; gap: .6rem; }
+.rabbit-home-library-row select { min-width: 0; padding: .5rem .6rem; border: 1px solid rgba(148, 163, 184, .3); border-radius: 6px; background: rgba(15, 23, 42, .55); color: inherit; }
+.rabbit-home-library-remove, .rabbit-add-library-button { padding: .48rem .65rem; border: 1px solid rgba(148, 163, 184, .25); border-radius: 6px; background: rgba(148, 163, 184, .08); color: inherit; cursor: pointer; }
+.rabbit-home-library-remove:hover, .rabbit-add-library-button:hover { background: rgba(148, 163, 184, .16); }
+.rabbit-home-library-remove { color: #fda4af; }
+.rabbit-add-library-button:disabled { opacity: .5; cursor: not-allowed; }
+.rabbit-home-library-empty { color: var(--app-text-muted, #94a3b8); font-size: .82rem; }
+.rabbit-optimize-button { padding: .5rem .8rem; border: 1px solid rgba(59, 130, 246, .55); border-radius: 6px; background: rgba(59, 130, 246, .18); color: var(--app-text-primary, #e5e7eb); cursor: pointer; }
+.rabbit-optimize-button:hover:not(:disabled) { background: rgba(59, 130, 246, .3); }
+.rabbit-optimize-button:disabled { opacity: .65; cursor: wait; }
+.rabbit-optimize-status { max-width: 760px; overflow-wrap: anywhere; }
+
+@media (max-width: 600px) {
+  .rabbit-home-library-row { grid-template-columns: 1fr 105px auto; gap: .35rem; }
+}
