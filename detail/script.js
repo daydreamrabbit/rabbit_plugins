@@ -944,9 +944,11 @@
       await request('/api/media/detail/edit', { method: 'POST', body: data });
       if (!root.isConnected) return;
       let detailFieldsError = '';
+      let detailFieldsWarning = '';
+      let coverArtistSaved = true;
       if (type === 'general' || type === 'adult') {
         try {
-          await request('/api/media/context-menu/book/plugins/action', {
+          const result = await request('/api/media/context-menu/book/plugins/action', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -961,13 +963,15 @@
               },
             }),
           });
+          coverArtistSaved = result.cover_artist_saved !== false;
+          detailFieldsWarning = (result.warnings || []).join(' ');
         } catch (error) {
           detailFieldsError = error.message;
         }
       }
       for (const [key] of fields) {
         if (key === 'publication_start_date' || key === 'publication_end_date') continue;
-        if (key !== 'cover_artist' || !detailFieldsError) meta[key] = String(data.get(key) || '');
+        if (key !== 'cover_artist' || (!detailFieldsError && coverArtistSaved)) meta[key] = String(data.get(key) || '');
       }
       if (!detailFieldsError && (type === 'general' || type === 'adult')) {
         meta.publication_dates = {
@@ -993,15 +997,16 @@
       } catch {
         refreshed = false;
       }
-      if (!detailFieldsError && meta.cover_artist && meta.cover_artist !== '-') meta.artist = meta.cover_artist;
+      if (!detailFieldsError && coverArtistSaved && meta.cover_artist && meta.cover_artist !== '-') meta.artist = meta.cover_artist;
       saving = false;
       editMode(false);
       renderHeader();
       loadDiscovery();
       notify(detailFieldsError
         ? '나머지 메타정보는 저장했지만 그림작가와 연재일을 저장하지 못했습니다. ' + detailFieldsError
+        : detailFieldsWarning ? '일부 상세정보는 저장했지만 그림작가 변경은 저장하지 못했습니다. ' + detailFieldsWarning
         : refreshed ? '시리즈 메타정보를 저장했습니다.' : '저장은 완료했습니다. 최신 표지는 페이지를 다시 열면 확인할 수 있습니다.',
-      Boolean(detailFieldsError));
+      Boolean(detailFieldsError || detailFieldsWarning));
     } catch (error) {
       if (root.isConnected) notify('저장하지 못했습니다. 입력 내용은 유지됩니다. ' + error.message, true);
     } finally {

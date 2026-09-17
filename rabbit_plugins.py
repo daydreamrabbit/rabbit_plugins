@@ -16,7 +16,7 @@ from xml.etree import ElementTree as ET
 from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 
-PLUGIN_VERSION = '1.0.1'
+PLUGIN_VERSION = '1.0.2'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 RELATION_FIELDS = {
     'main_story': 'relationships_main_story',
@@ -190,7 +190,9 @@ def _comicinfo_metadata(book):
     ))
 
 
-def _localized_series_sql(gateway):
+def _book_optional_column_sql(gateway, column):
+    if column not in ('localized_series', 'cover_artist'):
+        raise ValueError('Unsupported optional books column')
     engine = str(getattr(gateway, '_engine', 'sqlite')).casefold()
     if engine in ('mariadb', 'mysql'):
         columns = gateway.fetch_all('SHOW COLUMNS FROM books')
@@ -198,8 +200,8 @@ def _localized_series_sql(gateway):
     else:
         columns = gateway.fetch_all('PRAGMA table_info(books)')
         name = 'name'
-    if any(str(row.get(name) or '').casefold() == 'localized_series' for row in columns):
-        return 'b.localized_series'
+    if any(str(row.get(name) or '').casefold() == column for row in columns):
+        return 'b.' + column
     return 'NULL'
 
 
@@ -351,16 +353,24 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             return {'success': False, 'error': '시작권과 완결권이 같은 작품은 연재시작일과 종료일을 같게 입력해 주세요.'}
 
         # 코어 공용 편집 API가 그림작가와 권별 연재일을 받지 않아 플러그인 액션으로 함께 저장한다.
-        gateway.execute(
-            'UPDATE books SET cover_artist = ? WHERE series_name = ? AND COALESCE(is_deleted, 0) = 0',
-            (artist, series_name))
+        cover_artist_supported = _book_optional_column_sql(gateway, 'cover_artist') != 'NULL'
+        artist_changed = any(str(info.get('artist') or '').strip() != artist for _, info in volumes)
+        if cover_artist_supported:
+            gateway.execute(
+                'UPDATE books SET cover_artist = ? WHERE series_name = ? AND COALESCE(is_deleted, 0) = 0',
+                (artist, series_name))
         for book in start_books:
             if start_date:
                 gateway.execute('UPDATE books SET release_date = ? WHERE id = ?', (start_date, book['id']))
         for book in end_books:
             if end_date:
                 gateway.execute('UPDATE books SET release_date = ? WHERE id = ?', (end_date, book['id']))
-        return {'success': True}
+        return {
+            'success': True,
+            'cover_artist_saved': cover_artist_supported or not artist_changed,
+            'warnings': ['현재 DB에 cover_artist 컬럼이 없어 그림작가 변경은 저장하지 못했습니다.']
+            if not cover_artist_supported and artist_changed else [],
+        }
 
     def _home_recently_added(self, db_type):
         if not has_request_context() or not session.get('user_id'):
@@ -508,7 +518,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             if mode == 'discovery' and result.get('success'):
                 return {'success': True, 'relations': {}, 'recommendations': result.get('items', [])}
             return result
-        localized_series_sql = _localized_series_sql(gateway)
+        localized_series_sql = _book_optional_column_sql(gateway, 'localized_series')
         target = gateway.fetch_one(
             'SELECT b.id, b.series_name, b.series_alias, ' + localized_series_sql + ' AS localized_series, '
             'b.library_id, b.author, b.genre, b.tags, b.books_lv, '
@@ -529,15 +539,18 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             exclude_tags = str(config.get('exclude_tags') or '').strip()
             exclude_genres = str(config.get('exclude_genres') or '').strip()
             library = gateway.fetch_one('SELECT name FROM libraries WHERE id = ?', (target['library_id'],))
+            cover_artist_sql = _book_optional_column_sql(gateway, 'cover_artist')
             comicinfo_book = gateway.fetch_one(
-                'SELECT b.file_path, b.file_format, b.cover_artist, b.file_mtime, b.file_size, b.release_date FROM books b '
+                'SELECT b.file_path, b.file_format, ' + cover_artist_sql + ' AS cover_artist, '
+                'b.file_mtime, b.file_size, b.release_date FROM books b '
                 'WHERE b.id = ? AND COALESCE(b.is_deleted, 0) = 0' + permission,
                 (book_id, *libraries))
             comicinfo = _comicinfo_metadata(comicinfo_book or {})
             if comicinfo_book and comicinfo_book.get('release_date'):
                 comicinfo['date'] = comicinfo_book['release_date']
             files = gateway.fetch_all(
-                'SELECT b.id, b.file_path, b.file_format, b.cover_artist, b.file_size, b.file_mtime, b.created_at, '
+                'SELECT b.id, b.file_path, b.file_format, ' + cover_artist_sql + ' AS cover_artist, '
+                'b.file_size, b.file_mtime, b.created_at, '
                 'b.books_lv, b.genre, b.tags, b.release_date, b.total_pages, '
                 'COALESCE(p.pages_read, 0) AS pages_read, COALESCE(p.is_completed, 0) AS is_completed, p.last_read_at '
                 'FROM books b LEFT JOIN user_progress p ON p.book_id = b.id AND p.user_id = ? '
@@ -914,11 +927,11 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         local_books = []
         if korean_titles:
             placeholders = ','.join('?' for _ in korean_titles)
-            localized_series_sql = _localized_series_sql(gateway)
+            localized_series_sql = _book_optional_column_sql(gateway, 'localized_series')
             local_books = gateway.fetch_all(
                 'SELECT b.id, b.library_id, b.series_name, b.series_alias, '
                 + localized_series_sql + ' AS localized_series, b.cover_image, '
-                'b.author, b.publisher, b.publication_status, b.books_lv, b.genre, b.tags, '
+                'b.author, b.publisher, b.books_lv, b.genre, b.tags, '
                 'b.file_path, b.file_format, b.file_mtime, b.file_size '
                 'FROM books b WHERE COALESCE(b.is_deleted, 0) = 0 AND '
                 '(b.series_name IN (' + placeholders + ') OR b.series_alias IN (' + placeholders + '))' +
@@ -1017,7 +1030,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         order = 'b.id DESC'
         if random_order:
             order = 'RAND()' if getattr(gateway, '_engine', '') in ('mariadb', 'mysql') else 'RANDOM()'
-        localized_series_sql = _localized_series_sql(gateway)
+        localized_series_sql = _book_optional_column_sql(gateway, 'localized_series')
         return gateway.fetch_all(
             'SELECT b.id, b.series_name, b.series_alias, ' + localized_series_sql + ' AS localized_series, '
             'b.library_id, b.author, '
