@@ -24,6 +24,24 @@
     });
   }
   let activeIndex = 0;
+  let tabScrollPosition = null;
+
+  function captureScrollPosition() {
+    const mainContent = document.querySelector('.library-main-content');
+    return {
+      mainContent,
+      mainTop: mainContent?.scrollTop ?? 0,
+      pageX: window.scrollX,
+      pageY: window.scrollY,
+    };
+  }
+
+  tabs.addEventListener('pointerdown', event => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('[data-library-index]')) {
+      tabScrollPosition = captureScrollPosition();
+    }
+  }, true);
 
   function updateNavigation() {
     previous.disabled = row.scrollLeft <= 1;
@@ -107,7 +125,9 @@
     return card;
   }
 
-  function selectLibrary(index, focusTab = false) {
+  function selectLibrary(index, focusTab = false, preserveScroll = true) {
+    const scrollPosition = preserveScroll ? (tabScrollPosition || captureScrollPosition()) : null;
+    tabScrollPosition = null;
     activeIndex = index;
     const library = libraries[index];
     tabs.querySelectorAll('[role="tab"]').forEach((tab, tabIndex) => {
@@ -130,6 +150,17 @@
       books.forEach(book => row.appendChild(createCard(book, library)));
     }
     updateNavigation();
+
+    if (scrollPosition) {
+      requestAnimationFrame(() => {
+        if (scrollPosition.mainContent?.isConnected) {
+          scrollPosition.mainContent.scrollTop = scrollPosition.mainTop;
+        }
+        if (window.scrollX !== scrollPosition.pageX || window.scrollY !== scrollPosition.pageY) {
+          window.scrollTo(scrollPosition.pageX, scrollPosition.pageY);
+        }
+      });
+    }
   }
 
   if (!libraries.length) {
@@ -163,7 +194,7 @@
   });
 
   row.id = 'rabbit-library-books';
-  selectLibrary(0);
+  selectLibrary(0, false, false);
   row.addEventListener('scroll', updateNavigation, { passive: true });
 
   shadowRoot.addEventListener('click', event => {

@@ -348,12 +348,12 @@
 .ds-book-open:focus-visible .ds-book-overlay { opacity: 1; }
 .ds-book-title { display: -webkit-box; margin-top: 8px; overflow: hidden; color: var(--ds-text); font-size: 12px; font-weight: 600; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .ds-book-subtitle { display: block; margin-top: 3px; overflow: hidden; color: var(--ds-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.ds-book-progress { display: flex; align-items: center; gap: 4px; width: min(100%, 44px); max-width: 44px; margin-top: 3px; }
-.ds-book progress { display: block; width: 22px; flex: 0 0 22px; min-width: 0; height: 2px; margin: 0; appearance: none; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--ds-muted) 24%, var(--ds-panel)); }
+.ds-book-progress { display: flex; align-items: center; gap: 6px; width: 100%; max-width: 100%; margin-top: 5px; }
+.ds-book progress { display: block; width: auto; flex: 1 1 auto; min-width: 0; height: 4px; margin: 0; appearance: none; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--ds-muted) 24%, var(--ds-panel)); }
 .ds-book progress::-webkit-progress-bar { border-radius: 999px; background: color-mix(in srgb, var(--ds-muted) 24%, var(--ds-panel)); }
 .ds-book progress::-webkit-progress-value { border-radius: 999px; background: var(--ds-accent); transition: width .25s ease; }
 .ds-book progress::-moz-progress-bar { border-radius: 999px; background: var(--ds-accent); transition: width .25s ease; }
-.ds-book-progress-value { flex: 0 0 18px; color: var(--ds-text); font-size: 8px; font-variant-numeric: tabular-nums; text-align: right; }
+.ds-book-progress-value { flex: 0 0 30px; color: var(--ds-text); font-size: 9px; line-height: 1.2; font-variant-numeric: tabular-nums; text-align: right; }
 .ds-relations,
 .ds-recommendations { margin-top: 8px; }
 .ds-relations .ds-section-heading,

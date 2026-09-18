@@ -803,7 +803,8 @@
 
   function renderHeader() {
     renderLibraryPath();
-    const displayTitle = meta.series_alias || meta.series_name || context.seriesName || '도서 상세';
+    const displayTitle = String(meta.series_alias || meta.series_name || context.seriesName || '도서 상세')
+      .replace(/(?:\s*\[[^\]]*\])+\s*$/u, '').trim() || '도서 상세';
     $('[data-title]').textContent = displayTitle;
     const originalTitle = String(meta.localized_series || '').trim();
     const originalTitleNode = $('[data-original-title]');

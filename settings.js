@@ -5,6 +5,7 @@
   if (!list || !addButton || !saved) return;
 
   let libraries = [];
+  let draggedIndex = null;
   let sections = config.home_library_sections || [];
   if (typeof sections === 'string') {
     try { sections = JSON.parse(sections); } catch (e) { sections = []; }
@@ -23,6 +24,33 @@
     })));
   }
 
+  function moveHandle(index, row) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'rabbit-home-library-grip';
+    button.textContent = '⠿';
+    button.title = '끌어서 순서 이동';
+    button.setAttribute('aria-label', `${libraryName(index)} 이동`);
+    button.draggable = true;
+    button.addEventListener('dragstart', event => {
+      draggedIndex = index;
+      row.classList.add('is-dragging');
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', String(index));
+    });
+    button.addEventListener('dragend', () => {
+      draggedIndex = null;
+      list.querySelectorAll('.is-dragging, .is-drop-target').forEach(item => {
+        item.classList.remove('is-dragging', 'is-drop-target');
+      });
+    });
+    return button;
+  }
+
+  function libraryName(index) {
+    return libraries.find(library => String(library.id) === sections[index]?.library_id)?.name || '라이브러리';
+  }
+
   function render() {
     list.replaceChildren();
     if (!libraries.length) {
@@ -38,6 +66,23 @@
     sections.forEach((section, index) => {
       const row = document.createElement('div');
       row.className = 'rabbit-home-library-row';
+      row.addEventListener('dragover', event => {
+        if (draggedIndex === null || draggedIndex === index) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        row.classList.add('is-drop-target');
+      });
+      row.addEventListener('dragleave', event => {
+        if (!row.contains(event.relatedTarget)) row.classList.remove('is-drop-target');
+      });
+      row.addEventListener('drop', event => {
+        event.preventDefault();
+        if (draggedIndex === null || draggedIndex === index) return;
+        const [section] = sections.splice(draggedIndex, 1);
+        sections.splice(index, 0, section);
+        draggedIndex = null;
+        render();
+      });
 
       const librarySelect = document.createElement('select');
       librarySelect.setAttribute('aria-label', '라이브러리 선택');
@@ -78,7 +123,12 @@
         render();
       });
 
-      row.append(librarySelect, countSelect, removeButton);
+      row.append(
+        librarySelect,
+        countSelect,
+        moveHandle(index, row),
+        removeButton
+      );
       list.appendChild(row);
     });
 
