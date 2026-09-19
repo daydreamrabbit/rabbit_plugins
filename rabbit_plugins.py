@@ -1,8 +1,46 @@
 # 도서 상세 탭에 필요한 파일 정보, 관련작품, 추천항목을 제공합니다.
-import fcntl
+import os
+
+try:
+    import fcntl
+except ImportError:  # Windows has no fcntl; provide the small flock subset used below.
+    import msvcrt
+
+    class _FcntlCompat:
+        LOCK_EX = 1
+        LOCK_NB = 2
+        LOCK_UN = 8
+
+        @staticmethod
+        def flock(file_descriptor, operation):
+            non_blocking = bool(operation & _FcntlCompat.LOCK_NB)
+            if operation & _FcntlCompat.LOCK_UN:
+                mode = msvcrt.LK_UNLCK
+            else:
+                mode = msvcrt.LK_NBLCK if non_blocking else msvcrt.LK_LOCK
+
+            # msvcrt.locking locks bytes, so keep one byte in the sidecar file.
+            # The file is opened in append mode by both callers; concurrent first
+            # use is harmless because every process locks byte zero.
+            if not (operation & _FcntlCompat.LOCK_UN) and os.fstat(file_descriptor).st_size == 0:
+                current_position = os.lseek(file_descriptor, 0, os.SEEK_CUR)
+                try:
+                    os.lseek(file_descriptor, 0, os.SEEK_END)
+                    os.write(file_descriptor, b'\0')
+                finally:
+                    os.lseek(file_descriptor, current_position, os.SEEK_SET)
+
+            os.lseek(file_descriptor, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(file_descriptor, mode, 1)
+            except OSError as error:
+                if non_blocking:
+                    raise BlockingIOError(error.errno, str(error)) from error
+                raise
+
+    fcntl = _FcntlCompat()
 import hashlib
 import json
-import os
 import re
 import shutil
 import sqlite3
@@ -16,8 +54,13 @@ from xml.etree import ElementTree as ET
 from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 
-PLUGIN_VERSION = '1.0.3'
+PLUGIN_VERSION = '1.0.11'
 REQUIRED_CORE_COMMIT = '9ba7c93'
+SERIES_TYPES_BY_LIBRARY = {
+    'manga': {'manga', 'manhwa', 'manhua', 'oel'},
+    'novel': {'novel'},
+    'book': {'other'},
+}
 RELATION_FIELDS = {
     'main_story': 'relationships_main_story',
     'prequel': 'relationships_prequel',
@@ -136,6 +179,11 @@ def _title_key(value):
     return re.sub(r'[\s‐‑‒–—―−-]+', '', text)
 
 
+def _series_title_key(value):
+    text = re.sub(r'\s*\[[^\[\]]+\]\s*$', '', str(value or '').strip())
+    return _title_key(text)
+
+
 def _korean_titles(titles, secondary_titles):
     result = []
     for raw in (titles, secondary_titles):
@@ -190,19 +238,31 @@ def _comicinfo_metadata(book):
     ))
 
 
-def _book_optional_column_sql(gateway, column):
-    if column not in ('localized_series', 'cover_artist'):
-        raise ValueError('Unsupported optional books column')
+def _optional_column_sql(gateway, table, alias, column):
+    supported = {
+        'books': {
+            'localized_series', 'cover_artist',
+            'document_volume_index', 'document_volume_count',
+        },
+        'libraries': {'content_kind'},
+    }
+    if column not in supported.get(table, set()):
+        raise ValueError('Unsupported optional database column')
     engine = str(getattr(gateway, '_engine', 'sqlite')).casefold()
     if engine in ('mariadb', 'mysql'):
-        columns = gateway.fetch_all('SHOW COLUMNS FROM books')
+        columns = gateway.fetch_all('SHOW COLUMNS FROM ' + table)
         name = 'Field'
     else:
-        columns = gateway.fetch_all('PRAGMA table_info(books)')
+        columns = gateway.fetch_all('PRAGMA table_info(' + table + ')')
         name = 'name'
     if any(str(row.get(name) or '').casefold() == column for row in columns):
-        return 'b.' + column
-    return 'NULL'
+        return alias + '.' + column
+    return "'unspecified'" if (table, column) == ('libraries', 'content_kind') else 'NULL'
+
+
+def _series_type_matches_library(series_type, content_kind):
+    allowed_types = SERIES_TYPES_BY_LIBRARY.get(str(content_kind or 'unspecified').strip().casefold())
+    return allowed_types is None or str(series_type or '').strip().casefold() in allowed_types
 
 
 def _localized_series_value(book):
@@ -224,17 +284,184 @@ def _comicinfo_summary(element):
     return ''.join(parts).strip()
 
 
+def _metadata_number(value, integer_only=False):
+    match = re.search(r'(?<!\d)(\d+(?:\.\d+)?)', str(value or ''))
+    if not match:
+        return None
+    try:
+        number = float(match.group(1))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if number <= 0 or (integer_only and not number.is_integer()):
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def _series_volume_and_count(entries):
+    """Read explicit volume/count labels from EPUB and PDF document metadata."""
+    volume = count = None
+    searchable = []
+    volume_keys = {
+        'volume', 'vol', 'volumenumber', 'seriesindex', 'volumeindex',
+        'booknumber', 'bookindex', 'issuenumber', 'issue', 'groupposition',
+    }
+    count_keys = {
+        'count', 'seriescount', 'volumecount', 'totalcount', 'totalvolumes',
+        'numberofvolumes', 'totalbooks', 'numberofbooks', 'totalissues',
+        'numberofissues', 'seriestotal',
+    }
+
+    for key, raw_value in entries:
+        key_text = str(key or '').strip()
+        value = str(raw_value or '').strip()
+        if not value:
+            continue
+        normalized = re.sub(r'[^a-z0-9]+', '', key_text.casefold())
+        searchable.append(f'{key_text}: {value}')
+        if volume is None and (
+            normalized in volume_keys
+            or normalized.endswith(('seriesindex', 'volumeindex', 'volumenumber', 'booknumber', 'groupposition'))
+        ):
+            volume = _metadata_number(value)
+        if count is None and (
+            normalized in count_keys
+            or normalized.endswith(('seriescount', 'volumecount', 'totalcount', 'totalvolumes', 'totalissues'))
+        ):
+            count = _metadata_number(value, integer_only=True)
+
+    text = '\n'.join(searchable)
+    if volume is None:
+        match = re.search(
+            r'(?i)(?:calibre[\s:_-]*)?(?:series[\s:_-]*)?'
+            r'(?:index|volumes?|vol\.?|issues?|books?)'
+            r'(?:[\s:_-]*(?:number|no\.?))?\s*[:=#-]?\s*(\d+(?:\.\d+)?)',
+            text,
+        )
+        if match:
+            volume = _metadata_number(match.group(1))
+    if volume is None:
+        match = re.search(r'(?<!\d)(\d+(?:\.\d+)?)\s*(?:권|巻)', text)
+        if match:
+            volume = _metadata_number(match.group(1))
+
+    position = re.search(r'(?i)\b(\d+(?:\.\d+)?)\s*(?:of|/)\s*(\d+)\b', text)
+    if position:
+        volume = volume or _metadata_number(position.group(1))
+        count = count or _metadata_number(position.group(2), integer_only=True)
+    if count is None:
+        match = re.search(
+            r'(?i)(?:\b(?:series[\s:_-]*)?(?:count|total[\s:_-]*count)\b'
+            r'|\b(?:total[\s:_-]*|number[\s:_-]*of[\s:_-]*)'
+            r'(?:volumes?|books?|issues?)\b)\s*[:=#-]?\s*(\d+)',
+            text,
+        )
+        if match:
+            count = _metadata_number(match.group(1), integer_only=True)
+    return volume, count
+
+
+def _metadata_publication_date(entries):
+    """Use explicit publication dates; a PDF file-creation timestamp is not publication time."""
+    date_keys = {'date', 'dcdate', 'publicationdate', 'publisheddate', 'datepublished', 'releasedate'}
+    for key, raw_value in entries:
+        value = str(raw_value or '').strip()
+        if not value:
+            continue
+        normalized = re.sub(r'[^a-z0-9]+', '', str(key or '').casefold())
+        candidates = [value] if normalized in date_keys else []
+        label = re.search(
+            r'(?i)(?:publication\s*date|published(?:\s+date)?|release\s*date|released\s*date|dc:date)'
+            r'\s*[:=#]\s*(D:\s*\d{8,14}|\d{4}(?:[-/.]?\d{1,2})?(?:[-/.]?\d{1,2})?)',
+            value,
+        )
+        if label:
+            candidates.append(label.group(1))
+        for candidate in candidates:
+            match = re.search(r'(?<!\d)(\d{4})(?:[-/.]?(\d{2}))?(?:[-/.]?(\d{2}))?', candidate)
+            if not match:
+                continue
+            try:
+                return date(
+                    int(match.group(1)), int(match.group(2) or 1), int(match.group(3) or 1)
+                ).isoformat()
+            except (ValueError, OverflowError):
+                continue
+    return ''
+
+
+def _read_pdf_series_metadata(path, result):
+    """Read PDF document properties without rendering pages."""
+    import pypdfium2 as pdfium
+
+    document = pdfium.PdfDocument(path)
+    try:
+        metadata = document.get_metadata_dict() or {}
+    finally:
+        document.close()
+    entries = [(str(key), str(value)) for key, value in metadata.items() if value]
+    entries.append(('filename', Path(path).stem))
+    result['volume'], result['count'] = _series_volume_and_count(entries)
+    result['date'] = _metadata_publication_date(entries)
+    return result
+
+
 @lru_cache(maxsize=2048)
 def _read_comicinfo(path, file_format, artist, _file_mtime, _file_size):
     result = {
         'artist': artist,
         'format': '', 'count': None, 'volume': None, 'date': '', 'summary': '', 'localized_series': '',
     }
-    if not path or file_format not in ('cbz', 'zip'):
+    if not path:
         return result
+
+    if file_format == 'pdf':
+        try:
+            return _read_pdf_series_metadata(path, result)
+        except Exception:
+            # Invalid, encrypted, or unsupported PDF metadata must not break detail rendering.
+            return result
 
     try:
         with zipfile.ZipFile(path) as archive:
+            if file_format == 'epub':
+                container_name = next((name for name in archive.namelist()
+                                       if name.casefold() == 'meta-inf/container.xml'), None)
+                opf_name = ''
+                if container_name:
+                    container = ET.fromstring(archive.read(container_name))
+                    rootfile = next((element for element in container.iter()
+                                     if element.tag.rsplit('}', 1)[-1].casefold() == 'rootfile'), None)
+                    opf_name = str(rootfile.get('full-path') or '') if rootfile is not None else ''
+                if not opf_name:
+                    opf_name = next((name for name in archive.namelist()
+                                     if name.casefold().endswith('.opf')), '')
+                if not opf_name or archive.getinfo(opf_name).file_size > 2_000_000:
+                    return result
+                root = ET.fromstring(archive.read(opf_name))
+                dates, meta, metadata_entries = [], {}, []
+                for element in root.iter():
+                    key = element.tag.rsplit('}', 1)[-1].casefold()
+                    if key == 'date' and element.text and element.text.strip():
+                        dates.append(element.text.strip())
+                    if key == 'title' and element.text:
+                        metadata_entries.append(('title', element.text.strip()))
+                    if key == 'meta':
+                        name = str(element.get('name') or element.get('property') or '').casefold()
+                        value = (element.get('content') or element.text or '').strip()
+                        if name and value:
+                            metadata_entries.append((name, value))
+                            meta[name] = value
+                metadata_entries.append(('filename', Path(path).stem))
+                result['volume'], result['count'] = _series_volume_and_count(metadata_entries)
+                result['localized_series'] = meta.get('comic-book-butler:localizedseries', '')
+                for raw_date in dates:
+                    result['date'] = _metadata_publication_date([('date', raw_date)])
+                    if result['date']:
+                        break
+                return result
+
+            if file_format not in ('cbz', 'zip'):
+                return result
             xml_name = next((name for name in archive.namelist()
                              if name.replace('\\', '/').rsplit('/', 1)[-1].casefold() == 'comicinfo.xml'), None)
             if not xml_name or archive.getinfo(xml_name).file_size > 2_000_000:
@@ -295,6 +522,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         'limit': 20,
         'sessions': ['general'],
         'layout': 'full',
+        'initial_data': True,
     }
     dashboard_widget = None
     category_tab = None
@@ -355,7 +583,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             return {'success': False, 'error': '시작권과 완결권이 같은 작품은 연재시작일과 종료일을 같게 입력해 주세요.'}
 
         # 코어 공용 편집 API가 그림작가와 권별 연재일을 받지 않아 플러그인 액션으로 함께 저장한다.
-        cover_artist_supported = _book_optional_column_sql(gateway, 'cover_artist') != 'NULL'
+        cover_artist_supported = _optional_column_sql(gateway, 'books', 'b', 'cover_artist') != 'NULL'
         artist_changed = any(str(info.get('artist') or '').strip() != artist for _, info in volumes)
         if cover_artist_supported:
             gateway.execute(
@@ -531,11 +759,13 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             if mode == 'discovery' and result.get('success'):
                 return {'success': True, 'relations': {}, 'recommendations': result.get('items', [])}
             return result
-        localized_series_sql = _book_optional_column_sql(gateway, 'localized_series')
+        localized_series_sql = _optional_column_sql(gateway, 'books', 'b', 'localized_series')
+        content_kind_sql = _optional_column_sql(gateway, 'libraries', 'l', 'content_kind')
         target = gateway.fetch_one(
             'SELECT b.id, b.series_name, b.series_alias, ' + localized_series_sql + ' AS localized_series, '
-            'b.library_id, b.author, b.genre, b.tags, b.books_lv, '
+            'b.library_id, ' + content_kind_sql + ' AS content_kind, b.author, b.genre, b.tags, b.books_lv, '
             'b.file_path, b.file_format, b.file_mtime, b.file_size FROM books b '
+            'LEFT JOIN libraries l ON l.id = b.library_id '
             'WHERE b.id = ? AND COALESCE(b.is_deleted, 0) = 0' + permission,
             (book_id, *libraries))
         if not target or not visible(target):
@@ -552,7 +782,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             exclude_tags = str(config.get('exclude_tags') or '').strip()
             exclude_genres = str(config.get('exclude_genres') or '').strip()
             library = gateway.fetch_one('SELECT name FROM libraries WHERE id = ?', (target['library_id'],))
-            cover_artist_sql = _book_optional_column_sql(gateway, 'cover_artist')
+            cover_artist_sql = _optional_column_sql(gateway, 'books', 'b', 'cover_artist')
             comicinfo_book = gateway.fetch_one(
                 'SELECT b.file_path, b.file_format, ' + cover_artist_sql + ' AS cover_artist, '
                 'b.file_mtime, b.file_size, b.release_date FROM books b '
@@ -563,6 +793,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 comicinfo['date'] = comicinfo_book['release_date']
             files = gateway.fetch_all(
                 'SELECT b.id, b.file_path, b.file_format, ' + cover_artist_sql + ' AS cover_artist, '
+                + _optional_column_sql(gateway, 'books', 'b', 'document_volume_index') + ' AS document_volume_index, '
+                + _optional_column_sql(gateway, 'books', 'b', 'document_volume_count') + ' AS document_volume_count, '
                 'b.file_size, b.file_mtime, b.created_at, '
                 'b.books_lv, b.genre, b.tags, b.release_date, b.total_pages, '
                 'COALESCE(p.pages_read, 0) AS pages_read, COALESCE(p.is_completed, 0) AS is_completed, p.last_read_at '
@@ -573,6 +805,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             volume_metadata = []
             for row in files:
                 info = dict(comicinfo) if int(row['id']) == book_id else _comicinfo_metadata(row)
+                if row.get('document_volume_index') is not None:
+                    info['volume'] = row['document_volume_index']
+                if row.get('document_volume_count') is not None:
+                    info['count'] = row['document_volume_count']
                 info['date'] = row.get('release_date') or info['date']
                 volume_metadata.append(info)
             comicinfo['summary'] = comicinfo.get('summary') or next(
@@ -790,6 +1026,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         def is_current():
             try:
                 with sqlite3.connect(index.as_uri() + '?mode=ro', uri=True) as db:
+                    columns = {row[1] for row in db.execute('PRAGMA table_info(series_lookup)')}
+                    title_columns = {row[1] for row in db.execute('PRAGMA table_info(series_title_lookup)')}
+                    if not {'series_type', 'native_title'} <= columns or not {'series_id', 'title_key'} <= title_columns:
+                        return False
                     row = db.execute('SELECT source_path, source_size, source_mtime_ns FROM index_meta').fetchone()
                 return row == (source_path, stat.st_size, stat.st_mtime_ns)
             except (OSError, sqlite3.Error):
@@ -809,23 +1049,30 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 index_db.execute('PRAGMA synchronous=OFF')
                 index_db.execute(
                     'CREATE TABLE series_lookup '
-                    '(id INTEGER PRIMARY KEY, native_key TEXT, ko_titles TEXT, manga_updates_id TEXT)')
+                    '(id INTEGER PRIMARY KEY, series_type TEXT, native_title TEXT, native_key TEXT, ko_titles TEXT, manga_updates_id TEXT)')
+                index_db.execute('CREATE TABLE series_title_lookup (series_id INTEGER, title_key TEXT)')
                 index_db.execute('CREATE TABLE index_meta (source_path TEXT, source_size INTEGER, source_mtime_ns INTEGER)')
                 cursor = source_db.execute(
-                    'SELECT id, native_title, titles, secondary_titles_ko, source_manga_updates_id FROM series')
+                    'SELECT id, type AS series_type, native_title, titles, secondary_titles_ko, source_manga_updates_id FROM series')
                 while True:
                     batch = cursor.fetchmany(3000)
                     if not batch:
                         break
-                    values = []
+                    values, title_values = [], []
                     for row in batch:
-                        native_key = _title_key(row['native_title'])
+                        native_title = str(row['native_title'] or '').strip()
+                        native_key = _title_key(native_title)
                         ko_titles = _korean_titles(row['titles'], row['secondary_titles_ko'])
                         manga_updates_id = str(row['source_manga_updates_id'] or '').strip().casefold()
                         if native_key or ko_titles or manga_updates_id:
-                            values.append((row['id'], native_key, json.dumps(ko_titles, ensure_ascii=False), manga_updates_id))
+                            values.append((row['id'], row['series_type'], native_title, native_key,
+                                           json.dumps(ko_titles, ensure_ascii=False), manga_updates_id))
+                            title_values.extend((row['id'], _series_title_key(title)) for title in ko_titles
+                                                if _series_title_key(title))
                     if values:
-                        index_db.executemany('INSERT INTO series_lookup VALUES (?, ?, ?, ?)', values)
+                        index_db.executemany('INSERT INTO series_lookup VALUES (?, ?, ?, ?, ?, ?)', values)
+                    if title_values:
+                        index_db.executemany('INSERT INTO series_title_lookup VALUES (?, ?)', title_values)
                 after = source.stat()
                 if (after.st_size, after.st_mtime_ns) != (stat.st_size, stat.st_mtime_ns):
                     source_db.close()
@@ -834,6 +1081,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                     return None
                 index_db.execute('CREATE INDEX idx_series_lookup_native ON series_lookup(native_key)')
                 index_db.execute('CREATE INDEX idx_series_lookup_mu ON series_lookup(manga_updates_id)')
+                index_db.execute('CREATE INDEX idx_series_title_lookup_key ON series_title_lookup(title_key)')
                 index_db.execute('INSERT INTO index_meta VALUES (?, ?, ?)', (source_path, stat.st_size, stat.st_mtime_ns))
                 index_db.commit()
                 source_db.close()
@@ -864,33 +1112,50 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
     def _discovery_data(self, gateway, target, permission, libraries, visible,
                         check_rating, db_type, limit):
         index_path = self._series_index()
-        if not index_path or not target['localized_series']:
+        if not index_path:
             similar = self._similar_data(
-                gateway, target, permission, libraries, visible, check_rating, db_type, limit)
+                gateway, target, permission, libraries, visible, check_rating, db_type, limit,
+                use_cache=False)
             return {'success': True, 'relations': {}, 'recommendations': similar['items']}
 
         local_titles = [target['series_name'], target['series_alias']]
-        local_title_keys = {_title_key(value) for value in local_titles if _title_key(value)}
+        local_title_keys = {_series_title_key(value) for value in local_titles if _series_title_key(value)}
         try:
             with sqlite3.connect(index_path.as_uri() + '?mode=ro', uri=True) as db:
                 db.row_factory = sqlite3.Row
-                source_matches = [dict(row) for row in db.execute(
-                    'SELECT id, native_key, ko_titles, manga_updates_id FROM series_lookup WHERE native_key = ?',
-                    (_title_key(target['localized_series']),))]
-                source_matches = [row for row in source_matches if any(
-                    _title_key(title) in local_title_keys for title in json.loads(row['ko_titles'] or '[]'))]
+                source_matches = {}
+                localized_key = _title_key(target.get('localized_series'))
+                if localized_key:
+                    rows = db.execute(
+                        'SELECT id, series_type, native_title, native_key, ko_titles, manga_updates_id '
+                        'FROM series_lookup WHERE native_key = ?', (localized_key,))
+                    source_matches.update((row['id'], dict(row)) for row in rows)
+                if local_title_keys:
+                    placeholders = ','.join('?' for _ in local_title_keys)
+                    rows = db.execute(
+                        'SELECT DISTINCT s.id, s.series_type, s.native_title, s.native_key, s.ko_titles, s.manga_updates_id '
+                        'FROM series_title_lookup t JOIN series_lookup s ON s.id = t.series_id '
+                        'WHERE t.title_key IN (' + placeholders + ')', tuple(local_title_keys))
+                    source_matches.update((row['id'], dict(row)) for row in rows)
+                source_matches = [row for row in source_matches.values() if
+                    _series_type_matches_library(row['series_type'], target.get('content_kind')) and (
+                        (localized_key and row['native_key'] == localized_key) or any(
+                            _series_title_key(title) in local_title_keys
+                            for title in json.loads(row['ko_titles'] or '[]')))]
         except (OSError, sqlite3.Error, ValueError, TypeError):
             source_matches = []
         if not source_matches:
             similar = self._similar_data(
-                gateway, target, permission, libraries, visible, check_rating, db_type, limit)
+                gateway, target, permission, libraries, visible, check_rating, db_type, limit,
+                use_cache=False)
             return {'success': True, 'relations': {}, 'recommendations': similar['items']}
 
         source_ids = [row['id'] for row in source_matches]
         source_rows = self._source_series_rows(source_ids)
         if not source_rows:
             similar = self._similar_data(
-                gateway, target, permission, libraries, visible, check_rating, db_type, limit)
+                gateway, target, permission, libraries, visible, check_rating, db_type, limit,
+                use_cache=False)
             return {'success': True, 'relations': {}, 'recommendations': similar['items']}
 
         relation_ids = {kind: [] for kind in RELATION_FIELDS}
@@ -926,51 +1191,74 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 if all_ids:
                     placeholders = ','.join('?' for _ in all_ids)
                     by_id = {row['id']: dict(row) for row in db.execute(
-                        'SELECT id, native_key, ko_titles, manga_updates_id FROM series_lookup WHERE id IN (' + placeholders + ')',
+                        'SELECT id, series_type, native_title, native_key, ko_titles, manga_updates_id FROM series_lookup WHERE id IN (' + placeholders + ')',
                         all_ids)}
                 by_slug = {slug: [dict(row) for row in db.execute(
-                    'SELECT id, native_key, ko_titles, manga_updates_id FROM series_lookup WHERE manga_updates_id = ?',
+                    'SELECT id, series_type, native_title, native_key, ko_titles, manga_updates_id FROM series_lookup WHERE manga_updates_id = ?',
                     (slug,))] for slug in slugs}
         except (OSError, sqlite3.Error):
             by_id, by_slug = {}, {}
 
         candidates = list(by_id.values()) + [row for rows in by_slug.values() for row in rows]
         korean_titles = list(dict.fromkeys(
-            title for row in candidates for title in json.loads(row['ko_titles'] or '[]') if str(title).strip()))
+            [str(title).strip() for title in local_titles if str(title or '').strip()] +
+            [title for row in candidates for title in json.loads(row['ko_titles'] or '[]') if str(title).strip()]))
         local_books = []
         if korean_titles:
             placeholders = ','.join('?' for _ in korean_titles)
-            localized_series_sql = _book_optional_column_sql(gateway, 'localized_series')
+            title_patterns = [
+                re.sub(r'([!%_])', r'!\1', str(title)) + '%[%]'
+                for title in korean_titles
+            ]
+            pattern_conditions = ' OR '.join(
+                "(b.series_name LIKE ? ESCAPE '!' OR b.series_alias LIKE ? ESCAPE '!')"
+                for _ in title_patterns
+            )
+            localized_series_sql = _optional_column_sql(gateway, 'books', 'b', 'localized_series')
+            content_kind_sql = _optional_column_sql(gateway, 'libraries', 'l', 'content_kind')
             local_books = gateway.fetch_all(
-                'SELECT b.id, b.library_id, b.series_name, b.series_alias, '
-                + localized_series_sql + ' AS localized_series, b.cover_image, '
+                'SELECT b.id, b.library_id, ' + content_kind_sql + ' AS content_kind, b.series_name, b.series_alias, '
+                + localized_series_sql + ' AS localized_series, b.cover_image, b.cover_updated_at, '
                 'b.author, b.publisher, b.books_lv, b.genre, b.tags, '
-                'b.file_path, b.file_format, b.file_mtime, b.file_size '
-                'FROM books b WHERE COALESCE(b.is_deleted, 0) = 0 AND '
-                '(b.series_name IN (' + placeholders + ') OR b.series_alias IN (' + placeholders + '))' +
+                'b.file_path, b.file_format, b.file_mtime, b.file_size, '
+                'fc.cover_image AS first_cover, fc.cover_updated_at AS first_cover_updated_at '
+                'FROM books b LEFT JOIN libraries l ON l.id = b.library_id '
+                'LEFT JOIN books fc ON fc.id = (SELECT fb.id FROM books fb '
+                'WHERE fb.series_name = b.series_name AND fb.library_id = b.library_id '
+                'AND COALESCE(fb.is_deleted, 0) = 0 AND fb.cover_image IS NOT NULL '
+                "AND fb.cover_image <> '' ORDER BY fb.id ASC LIMIT 1) "
+                'WHERE COALESCE(b.is_deleted, 0) = 0 AND '
+                '(b.series_name IN (' + placeholders + ') OR b.series_alias IN (' + placeholders + ')'
+                ' OR ' + pattern_conditions + ')' +
                 permission + ' ORDER BY b.id',
-                (*korean_titles, *korean_titles, *libraries))
+                (*korean_titles, *korean_titles,
+                 *[pattern for pattern in title_patterns for _ in range(2)], *libraries))
         books_by_title = {}
         for book in local_books:
             if not visible(book):
                 continue
             for name in (book['series_name'], book['series_alias']):
-                key = _title_key(name)
+                key = _series_title_key(name)
                 if key:
                     books_by_title.setdefault(key, []).append(book)
 
         def local_item(series):
-            if not series['native_key'] or not series['ko_titles']:
+            if not series['native_key']:
                 return None
             try:
                 titles = json.loads(series['ko_titles'] or '[]')
             except (TypeError, ValueError):
-                return None
+                titles = []
+            if not titles:
+                titles = local_titles
             matches = []
             for title in titles:
-                for book in books_by_title.get(_title_key(title), []):
+                for book in books_by_title.get(_series_title_key(title), []):
+                    if not _series_type_matches_library(series.get('series_type'), book.get('content_kind')):
+                        continue
                     book['localized_series'] = _localized_series_value(book)
-                    if book['localized_series'] and _title_key(book['localized_series']) == series['native_key'] and (
+                    if (not book['localized_series'] or
+                        _title_key(book['localized_series']) == series['native_key']) and (
                         not check_rating or check_rating(db_type, book['id'])
                     ) and book not in matches:
                         matches.append(book)
@@ -981,16 +1269,22 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 not bool(book['cover_image']), int(book['id'])))
             book = matches[0]
             same_library = [item for item in matches if str(item['library_id']) == str(book['library_id'])]
+            from services.book_service import get_cover_image_with_t
+
             return {
                 'book_id': book['id'], 'series_name': book['series_name'],
-                'display_name': book['series_alias'] or book['series_name'],
-                'localized_series': book['localized_series'], 'library_id': book['library_id'],
-                'cover': book['cover_image'], 'author': book['author'], 'publisher': book['publisher'],
+                'display_name': re.sub(r'\s*\[[^\[\]]+\]\s*$', '',
+                                       book['series_alias'] or book['series_name']).strip(),
+                'localized_series': book['localized_series'] or series.get('native_title', ''),
+                'library_id': book['library_id'],
+                'cover': get_cover_image_with_t(
+                    book['first_cover'] or book['cover_image'], book.get('first_cover_updated_at')),
+                'author': book['author'], 'publisher': book['publisher'],
                 'book_count': len(same_library),
             }
 
         def work_key(item):
-            return (_title_key(item['series_name']), _title_key(item['localized_series']))
+            return _series_title_key(item['series_name'])
 
         relations = {}
         for kind, ids in relation_ids.items():
@@ -1022,7 +1316,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
 
         similar = self._similar_data(
             gateway, target, permission, libraries, visible, check_rating, db_type, limit,
-            include_random_fallback=False)['items']
+            include_random_fallback=False, use_cache=False)['items']
         for item in similar:
             key = work_key(item)
             if key not in related_keys and key not in seen:
@@ -1043,15 +1337,17 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         order = 'b.id DESC'
         if random_order:
             order = 'RAND()' if getattr(gateway, '_engine', '') in ('mariadb', 'mysql') else 'RANDOM()'
-        localized_series_sql = _book_optional_column_sql(gateway, 'localized_series')
+        localized_series_sql = _optional_column_sql(gateway, 'books', 'b', 'localized_series')
         return gateway.fetch_all(
             'SELECT b.id, b.series_name, b.series_alias, ' + localized_series_sql + ' AS localized_series, '
-            'b.library_id, b.author, '
+            'b.library_id, b.author, b.cover_updated_at, '
             'b.books_lv, b.genre, b.tags, b.cover_image, '
-            '(SELECT fb.cover_image FROM books fb WHERE fb.series_name = b.series_name '
-            'AND fb.library_id = b.library_id AND COALESCE(fb.is_deleted, 0) = 0 '
-            "AND fb.cover_image IS NOT NULL AND fb.cover_image <> '' ORDER BY fb.id ASC LIMIT 1) AS first_cover "
-            'FROM books b WHERE COALESCE(b.is_deleted, 0) = 0 '
+            'fc.cover_image AS first_cover, fc.cover_updated_at AS first_cover_updated_at '
+            'FROM books b LEFT JOIN books fc ON fc.id = (SELECT fb.id FROM books fb '
+            'WHERE fb.series_name = b.series_name AND fb.library_id = b.library_id '
+            'AND COALESCE(fb.is_deleted, 0) = 0 AND fb.cover_image IS NOT NULL '
+            "AND fb.cover_image <> '' ORDER BY fb.id ASC LIMIT 1) "
+            'WHERE COALESCE(b.is_deleted, 0) = 0 '
             "AND b.series_name IS NOT NULL AND b.series_name <> '' AND b.series_name <> ?" + permission +
             ' AND ' + condition + ' ORDER BY ' + order + ' LIMIT 400',
             (target['series_name'], *libraries, *values))
@@ -1061,7 +1357,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         groups = {field: tokens(target[field]) for field in ('genre', 'tags')}
         rows = self._matching_book_rows(
             gateway, target, permission, libraries, groups, random_order=True)
-        target_names = {value for value in (target['series_name'], target['series_alias']) if value}
+        from services.book_service import get_cover_image_with_t
+
+        target_names = {_series_title_key(value) for value in (target['series_name'], target['series_alias'])
+                        if _series_title_key(value)}
         excluded = set(excluded)
         found, found_by_both = {}, {}
         for row in rows:
@@ -1069,16 +1368,18 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 continue
             shared_genres = groups['genre'] & tokens(row['genre'])
             shared_tags = groups['tags'] & tokens(row['tags'])
-            if row['series_name'] in target_names or (not shared_genres and not shared_tags):
+            if _series_title_key(row['series_name']) in target_names or (not shared_genres and not shared_tags):
                 continue
             item = {
                 'book_id': row['id'], 'series_name': row['series_name'],
-                'display_name': row['series_alias'] or row['series_name'],
+                'display_name': re.sub(r'\s*\[[^\[\]]+\]\s*$', '',
+                                       row['series_alias'] or row['series_name']).strip(),
                 'localized_series': row['localized_series'], 'library_id': row['library_id'],
-                'author': row['author'], 'cover': row['first_cover'] or row['cover_image'],
+                'author': row['author'], 'cover': get_cover_image_with_t(
+                    row['first_cover'] or row['cover_image'], row.get('first_cover_updated_at')),
             }
-            key = (item['series_name'], item['library_id'])
-            work = (_title_key(item['series_name']), _title_key(item['localized_series']))
+            key = (_series_title_key(item['series_name']), item['library_id'])
+            work = _series_title_key(item['series_name'])
             if work not in excluded and key not in found:
                 found[key] = item
             if work not in excluded and groups['genre'] and groups['tags'] and shared_genres and shared_tags:
@@ -1086,45 +1387,52 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         return list((found_by_both or found).values())[:limit]
 
     def _similar_data(self, gateway, target, permission, libraries, visible, check_rating, db_type, limit,
-                      include_random_fallback=True):
+                      include_random_fallback=True, use_cache=True):
         signature = json.dumps([
             db_type, target, libraries, session.get('user_id'), session.get('content_rating_max', 18)
         ], sort_keys=True, ensure_ascii=False)
-        cache_key = 'similar-v4:' + hashlib.sha256(signature.encode()).hexdigest()
-        try:
-            cached = self.cache_get(cache_key)
-            if cached:
-                items = json.loads(cached)
-                items = [item for item in items if
-                         not check_rating or check_rating(db_type, item['book_id'])][:limit]
-                if items or not include_random_fallback:
-                    return {'success': True, 'items': items}
-                return {'success': True, 'items': self._random_genre_tag_recommendations(
-                    gateway, target, permission, libraries, visible, check_rating, db_type, limit)}
-        except (ValueError, TypeError):
-            pass
+        cache_key = 'similar-v5:' + hashlib.sha256(signature.encode()).hexdigest()
+        if use_cache:
+            try:
+                cached = self.cache_get(cache_key)
+                if cached:
+                    items = json.loads(cached)
+                    items = [item for item in items if
+                             not check_rating or check_rating(db_type, item['book_id'])][:limit]
+                    if items or not include_random_fallback:
+                        return {'success': True, 'items': items}
+                    return {'success': True, 'items': self._random_genre_tag_recommendations(
+                        gateway, target, permission, libraries, visible, check_rating, db_type, limit)}
+            except (ValueError, TypeError):
+                pass
 
         groups = {field: tokens(target[field]) for field in ('author', 'tags')}
         rows = self._matching_book_rows(gateway, target, permission, libraries, groups)
         ranked = {}
-        target_names = {value for value in (target['series_name'], target['series_alias']) if value}
+        from services.book_service import get_cover_image_with_t
+
+        target_names = {_series_title_key(value) for value in (target['series_name'], target['series_alias'])
+                        if _series_title_key(value)}
         for row in rows:
             if not visible(row):
                 continue
             score = 6 * len(groups['author'] & tokens(row['author'])) + len(groups['tags'] & tokens(row['tags']))
-            if not score or row['series_name'] in target_names:
+            if not score or _series_title_key(row['series_name']) in target_names:
                 continue
-            key = (row['series_name'], row['library_id'])
+            key = (_series_title_key(row['series_name']), row['library_id'])
             item = {
                 'book_id': row['id'], 'series_name': row['series_name'],
-                'display_name': row['series_alias'] or row['series_name'],
+                'display_name': re.sub(r'\s*\[[^\[\]]+\]\s*$', '',
+                                       row['series_alias'] or row['series_name']).strip(),
                 'localized_series': row['localized_series'], 'library_id': row['library_id'],
-                'author': row['author'], 'cover': row['first_cover'] or row['cover_image'], 'score': score,
+                'author': row['author'], 'cover': get_cover_image_with_t(
+                    row['first_cover'] or row['cover_image'], row.get('first_cover_updated_at')), 'score': score,
             }
             if key not in ranked or score > ranked[key]['score']:
                 ranked[key] = item
         items = sorted(ranked.values(), key=lambda item: (-item['score'], item['series_name']))[:24]
-        self.cache_set(cache_key, json.dumps(items, ensure_ascii=False), ttl=120)
+        if use_cache:
+            self.cache_set(cache_key, json.dumps(items, ensure_ascii=False), ttl=120)
         if check_rating:
             items = [item for item in items if check_rating(db_type, item['book_id'])]
         if not items and include_random_fallback:

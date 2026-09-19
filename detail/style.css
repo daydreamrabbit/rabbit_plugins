@@ -356,6 +356,7 @@
 .ds-book-progress-value { flex: 0 0 30px; color: var(--ds-text); font-size: 9px; line-height: 1.2; font-variant-numeric: tabular-nums; text-align: right; }
 .ds-relations,
 .ds-recommendations { margin-top: 8px; }
+.ds-discovery-loading { margin: 38px 0 12px; color: var(--ds-muted); font-size: 12px; }
 .ds-relations .ds-section-heading,
 .ds-recommendations .ds-section-heading { margin-top: 38px; }
 .ds-relation-label { display: block; padding: 5px 8px; border: 1px solid var(--ds-border); border-bottom: 0; border-radius: 5px 5px 0 0; background: var(--ds-panel); color: var(--ds-text); font-size: 11px; font-weight: 700; line-height: 1.35; text-align: center; }

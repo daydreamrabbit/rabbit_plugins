@@ -1058,17 +1058,20 @@
 
   async function loadDiscovery() {
     if (discoveryLoaded || loadingDiscovery) return;
-    const section = $('[data-recommendation-section]');
-    const target = $('[data-recommendations]');
+    const loading = $('[data-discovery-loading]');
     if (!books.length) {
       renderRelations({});
       renderRecommendations([]);
+      discoveryLoaded = true;
       return;
     }
     loadingDiscovery = true;
-    section.hidden = false;
-    target.setAttribute('aria-busy', 'true');
-    target.replaceChildren(node('p', 'ds-empty', '추천항목을 확인하고 있습니다.'));
+    loading.removeAttribute('data-state');
+    loading.setAttribute('aria-busy', 'true');
+    loading.hidden = false;
+    loading.textContent = '관련작품과 추천항목을 불러오고 있습니다.';
+    renderRelations({});
+    renderRecommendations([]);
     try {
       const data = await request(apiUrl('discovery'));
       if (!root.isConnected) return;
@@ -1076,11 +1079,17 @@
       renderRecommendations(data.recommendations || []);
       discoveryLoaded = true;
     } catch (error) {
-      target.replaceChildren(node('p', 'ds-empty', '추천항목을 불러오지 못했습니다. ' + error.message));
-      section.hidden = false;
+      if (root.isConnected) {
+        loading.textContent = '관련작품과 추천항목을 불러오지 못했습니다. ' + error.message;
+        loading.dataset.state = 'error';
+      }
     } finally {
       loadingDiscovery = false;
-      target.removeAttribute('aria-busy');
+      loading.removeAttribute('aria-busy');
+      if (discoveryLoaded) {
+        loading.hidden = true;
+        delete loading.dataset.state;
+      }
     }
   }
 
