@@ -1702,7 +1702,6 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         'limit': 20,
         'sessions': ['general'],
         'layout': 'full',
-        'initial_data': True,
     }
     dashboard_widget = None
     category_tab = None
