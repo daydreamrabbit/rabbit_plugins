@@ -1706,6 +1706,24 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
     }
     dashboard_widget = None
     category_tab = None
+    # 저장소 설치 검증과 플러그인 매니저의 자동 업데이트에 사용하는 계약.
+    # 저장소 루트가 곧 플러그인 루트이므로 raw_base_url 아래에 런타임 파일을
+    # 직접 나열한다. README/CHANGELOG는 실행 파일이 아니어서 업데이트 대상에서
+    # 제외한다.
+    update_manifest = {
+        'enabled': True,
+        'provider': 'github-raw',
+        'raw_base_url': 'https://raw.githubusercontent.com/daydreamrabbit/rabbit_plugins/main',
+        'files': [
+            'rabbit_plugins.py', '__init__.py', 'VERSION',
+            'settings.html', 'settings.css', 'settings.js',
+            'dashboard.html', 'dashboard.css', 'dashboard.js',
+            'detail/index.html', 'detail/style.css', 'detail/script.js',
+        ],
+        'version_file': 'VERSION',
+        'version_key': 'plugin version',
+        'show_sample_update_button': True,
+    }
 
     def search(self, db_type, query):
         config = self.get_plugin_config(db_type or 'general', {}) or {}
