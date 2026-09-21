@@ -46,6 +46,7 @@ import json
 import re
 import shutil
 import sqlite3
+import threading
 import unicodedata
 import zipfile
 from datetime import date, datetime
@@ -85,6 +86,13 @@ METADATA_FIELDS = (
     'genre', 'tags', 'release_date', 'isbn', 'link', 'cover',
 )
 METADATA_COVER_KIND_PATTERN = re.compile(r'^[a-z][a-z0-9_-]{0,23}$')
+
+# Scanner hooks can be delivered by more than one background thread (the
+# ``new books`` and ``scan completed`` events are intentionally independent in
+# the core).  Automatic collection must therefore serialize its database and
+# remote-provider work.  The lock is process-local, which is sufficient for a
+# single BookOasis worker and avoids starting a second nested daemon thread.
+_AUTO_COLLECT_LOCK = threading.Lock()
 
 
 def _config_bool(value, default=False):
@@ -1536,7 +1544,13 @@ def _remote_search(source, query, content_kind, book_type='', limit=8):
         response.raise_for_status()
         parser = _MetadataPageParser()
         parser.feed(response.text)
-    except Exception:
+    except Exception as error:
+        # A provider timeout, DNS failure, or proxy HTML response used to look
+        # exactly like a valid search with no matches.  Keep the UI resilient,
+        # but leave a useful reason in the server log so a NAS deployment can
+        # distinguish network access from title matching problems.
+        print(f'[RabbitPlugins-Metadata] {source} 검색 실패 query={query!r} '
+              f'url={url!r}: {type(error).__name__}: {error}')
         return []
     result = []
     seen = set()
@@ -1664,7 +1678,9 @@ def _remote_fetch_metadata(url, source):
         if keyword_text or hashtag_text:
             metadata['tags'] = keyword_text or ', '.join(hashtag_text)
         return _metadata_clean(metadata)
-    except Exception:
+    except Exception as error:
+        print(f'[RabbitPlugins-Metadata] {source} 상세 수집 실패 url={url!r}: '
+              f'{type(error).__name__}: {error}')
         return {'link': url} if url else {}
 
 
@@ -1750,7 +1766,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         # Candidate filtering and media-type labels are part of the result
         # shape; invalidate older cached cards that may contain description
         # rows from the unfiltered Ridi response.
-        cache_key = 'metadata-search:v6:' + hashlib.sha256(
+        # v7 intentionally invalidates the older cache, which could contain an
+        # empty response from a transient NAS/proxy failure.  Empty searches
+        # are not cached so a later scan can retry the provider immediately.
+        cache_key = 'metadata-search:v7:' + hashlib.sha256(
             json.dumps([query, content_kind, book_type, _metadata_source_order(config)], ensure_ascii=False).encode()
         ).hexdigest()
         try:
@@ -1786,10 +1805,11 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                     break
             if len(results) >= 24:
                 break
-        try:
-            self.cache_set(cache_key, json.dumps(results, ensure_ascii=False), ttl=300)
-        except Exception:
-            pass
+        if results:
+            try:
+                self.cache_set(cache_key, json.dumps(results, ensure_ascii=False), ttl=300)
+            except Exception:
+                pass
         return results
 
     @staticmethod
@@ -2429,6 +2449,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         config = self.get_plugin_config(db_type, {}) or {}
         gateway = self.get_db_gateway(db_type)
         library_id = payload.get('library_id')
+        source_order = _metadata_source_order(config)
+        selected_fields = _metadata_field_selection(config)
         localized_sql = _optional_column_sql(gateway, 'books', 'b', 'localized_series')
         artist_sql = _optional_column_sql(gateway, 'books', 'b', 'cover_artist')
         localized_condition = (
@@ -2456,6 +2478,9 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             'ORDER BY id DESC LIMIT 80'
         )
         rows = gateway.fetch_all(query, (library_id,)) if library_id else gateway.fetch_all(query)
+        print(f'[RabbitPlugins-Metadata] 자동 수집 대상={len(rows)}권 '
+              f'db={db_type} library_id={library_id or "all"} '
+              f'sources={",".join(source_order)} fields={",".join(selected_fields)}')
         series_files = {}
         for item in rows:
             item_series = str(item.get('series_name') or item.get('title') or '').strip()
@@ -2463,12 +2488,16 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             if item_series:
                 series_files.setdefault(item_key, []).append(str(item.get('file_path') or ''))
         seen = set()
+        processed = 0
+        matched = 0
+        updated = 0
         for row in rows:
             series = str(row.get('series_name') or row.get('title') or '').strip()
             key = (series.casefold(), row.get('library_id'))
             if not series or key in seen:
                 continue
             seen.add(key)
+            processed += 1
             content_kind = 'manga'
             try:
                 library = gateway.fetch_one('SELECT content_kind FROM libraries WHERE id = ?', (row['library_id'],))
@@ -2492,22 +2521,35 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 _metadata_source_order(config),
             )
             if selected_candidates:
+                matched += 1
                 selected = self._merge_metadata_candidates(selected_candidates, content_kind)
                 applied, message = self._apply_metadata(gateway, row['id'], selected, config)
+                if applied:
+                    updated += 1
                 selected_sources = ','.join(
                     str(item.get('source') or '').strip() for item in selected_candidates)
                 print(f'[RabbitPlugins-Metadata] series={series!r} sources={selected_sources} '
                       f'applied={applied} message={message}')
             else:
-                print(f'[RabbitPlugins-Metadata] series={series!r} 결과 없음')
+                search_query = _metadata_search_query(series, config)
+                print(f'[RabbitPlugins-Metadata] series={series!r} 결과 없음 '
+                      f'query={search_query!r} content_kind={content_kind!r} '
+                      f'book_type={book_type!r}')
+        return {
+            'rows': len(rows), 'processed': processed,
+            'matched': matched, 'updated': updated,
+        }
 
     def _queue_auto_collect(self, db_type, payload):
         config = self.get_plugin_config(db_type, {}) or {}
         if not _config_bool(config.get('metadata_auto_enabled'), False):
+            print(f'[RabbitPlugins-Metadata] 자동 수집 건너뜀 db={db_type}: '
+                  '설정이 꺼져 있습니다.')
             return {'success': True, 'skipped': True, 'message': '자동 메타데이터 수집이 꺼져 있습니다.'}
         if db_type not in ('general', 'adult'):
+            print(f'[RabbitPlugins-Metadata] 자동 수집 건너뜀 db={db_type}: '
+                  '일반/성인 서재가 아닙니다.')
             return {'success': True, 'skipped': True, 'message': '도서 서재만 자동 수집합니다.'}
-        import threading
         app = None
         if has_request_context():
             try:
@@ -2516,26 +2558,37 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             except Exception:
                 app = None
 
-        def worker():
-            try:
+        # The scanner already calls plugin hooks from its event worker.  The
+        # previous implementation created a second daemon thread here, so a
+        # container restart or worker teardown could silently discard the
+        # actual collection after the hook had reported success.  Run the
+        # bounded operation in this hook instead and serialize overlapping
+        # new-book/completion events with one process lock.
+        try:
+            with _AUTO_COLLECT_LOCK:
                 if app is not None:
                     with app.app_context():
-                        self._auto_collect(db_type, dict(payload or {}))
+                        stats = self._auto_collect(db_type, dict(payload or {}))
                 else:
-                    self._auto_collect(db_type, dict(payload or {}))
-            except Exception as error:
-                print(f'[RabbitPlugins-Metadata] 자동 수집 실패: {error}')
-
-        threading.Thread(target=worker, daemon=True).start()
-        return {'success': True, 'queued': True, 'message': '메타데이터 자동 수집을 백그라운드에 등록했습니다.'}
+                    stats = self._auto_collect(db_type, dict(payload or {}))
+            return {
+                'success': True,
+                'completed': True,
+                'stats': stats,
+                'message': '메타데이터 자동 수집을 완료했습니다.',
+            }
+        except Exception as error:
+            print(f'[RabbitPlugins-Metadata] 자동 수집 실패 db={db_type}: '
+                  f'{type(error).__name__}: {error}')
+            return {'success': False, 'error': str(error), 'message': '메타데이터 자동 수집에 실패했습니다.'}
 
     def on_scan_new_books_detected(self, db_type, payload):
         return self._queue_auto_collect(db_type, payload)
 
     def on_scan_completed(self, db_type, payload):
-        # New books already use on_scan_new_books_detected.  The completion
-        # hook is for a later scan of existing books whose automatic collection
-        # was interrupted or failed, so do not start a second worker here.
+        # New books are handled by on_scan_new_books_detected.  The completion
+        # hook retries existing rows on later scans without running the same
+        # series twice in one scan.
         if int((payload or {}).get('new_books_count') or 0) > 0:
             return {'success': True, 'skipped': True, 'message': '신규 도서는 기존 수집 훅에서 처리합니다.'}
         return self._queue_auto_collect(db_type, payload)
