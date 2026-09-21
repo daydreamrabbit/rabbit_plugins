@@ -60,12 +60,6 @@
     syncConversionMap(group);
   };
   conversionGroups.forEach(renderConversionGroup);
-  const fixedKinds = [
-    { code: 'manga', name: '만화' },
-    { code: 'novel', name: '소설' },
-    { code: 'manhwa', name: '웹툰' },
-    { code: 'unspecified', name: '미지정' },
-  ];
   const kindGroups = [
     { key: 'metadata_cover_kinds', list: '#rabbit-metadata-cover-kinds', setting: '.rabbit-cover-kind-setting', toggle: 'metadata_collect_cover' },
     { key: 'metadata_overwrite_kinds', list: '#rabbit-metadata-overwrite-kinds', setting: '.rabbit-overwrite-kind-setting', toggle: 'metadata_overwrite' },
@@ -97,15 +91,20 @@
   const renderKindGroup = (group, kinds) => {
     const list = root.querySelector(group.list);
     if (!list) return;
-    const byCode = new Map(fixedKinds.map(item => [item.code, { ...item }]));
+    const byCode = new Map();
     (Array.isArray(kinds) ? kinds : []).forEach(kind => {
       const code = String(kind?.code || '').trim().toLowerCase();
-      if (!kindPattern.test(code) || code === 'unspecified') return;
+      if (!kindPattern.test(code)) return;
       byCode.set(code, { code, name: String(kind?.name || code).trim() || code });
     });
-    configuredKinds(group).forEach(code => {
-      if (!byCode.has(code)) byCode.set(code, { code, name: code });
-    });
+    if (!byCode.size) {
+      const empty = document.createElement('span');
+      empty.className = 'rabbit-setting-loading';
+      empty.textContent = '현재 DB에 등록된 자료 유형이 없습니다.';
+      list.replaceChildren(empty);
+      syncKindGroup(group);
+      return;
+    }
     const allLabel = document.createElement('label');
     allLabel.className = 'rabbit-choice-label rabbit-choice-all';
     const allInput = document.createElement('input');
@@ -164,15 +163,20 @@
       });
       const data = await response.json();
       if (!response.ok || !data.success) throw new Error(data.error || '속성 목록을 불러오지 못했습니다.');
-      kindGroups.forEach(group => renderKindGroup(group, data.kinds));
+      const kinds = Array.isArray(data.kinds) ? data.kinds.slice() : [];
+      const hasUnspecified = Array.isArray(data.libraries)
+        && data.libraries.some(library => String(library?.content_kind || '').trim().toLowerCase() === 'unspecified');
+      if (hasUnspecified && !kinds.some(kind => String(kind?.code || '').trim().toLowerCase() === 'unspecified')) {
+        kinds.push({ code: 'unspecified', name: '미지정' });
+      }
+      kindGroups.forEach(group => renderKindGroup(group, kinds));
       syncKindAvailability();
     } catch (error) {
       console.warn(`[${pluginId}] 라이브러리 속성 목록을 불러오지 못했습니다.`, error);
-      kindGroups.forEach(group => renderKindGroup(group));
+      kindGroups.forEach(group => renderKindGroup(group, []));
       syncKindAvailability();
     }
   };
-  kindGroups.forEach(group => renderKindGroup(group));
   loadKinds();
   kindGroups.forEach(group => root.querySelector(`[name="${group.toggle}"]`)?.addEventListener('change', syncKindAvailability));
   syncKindAvailability();
