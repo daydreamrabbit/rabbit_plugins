@@ -1702,6 +1702,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         'limit': 20,
         'sessions': ['general'],
         'layout': 'full',
+        # 홈 화면 HTML에 첫 데이터를 함께 주입해 초기 API 요청과 로딩 깜빡임을 줄인다.
+        'initial_data': True,
     }
     dashboard_widget = None
     category_tab = None
