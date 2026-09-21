@@ -1,28 +1,163 @@
 <div class="rabbit-plugin-settings">
-  <section class="rabbit-setting">
+  <div class="rabbit-settings-intro">
+    <strong><i class="fa-solid fa-wand-magic-sparkles"></i> Rabbit Plugins 설정</strong>
+    <span>상세 화면과 자동 메타데이터 수집을 한 곳에서 관리합니다.</span>
+  </div>
+
+  <section class="rabbit-setting-group">
+    <div class="rabbit-setting-group-heading">
+      <i class="fa-solid fa-sliders"></i>
+      <div><h3>기본 표시</h3><p>상세 화면에서 사용할 로컬 데이터와 표시 제외 규칙입니다.</p></div>
+    </div>
+    <div class="rabbit-settings-grid">
+    <section class="rabbit-setting">
     <label class="rabbit-setting-toggle">
       <input type="checkbox" name="support_summary_html" checked>
       <span>ComicInfo 소개에 포함된 이미지 표시</span>
     </label>
     <p>켜면 CBZ/ZIP의 ComicInfo.xml Summary에서 이미지 태그를 읽어 소개에 표시합니다. 끄면 이미지와 태그 문구를 표시하지 않습니다.</p>
-  </section>
+    </section>
 
-  <section class="rabbit-setting">
+    <section class="rabbit-setting">
     <label class="rabbit-setting-label" for="rabbit-series-db-path">Series.db 경로</label>
     <input id="rabbit-series-db-path" class="rabbit-setting-input" type="text" name="series_db_path" placeholder="/app/db/series.full.sqlite">
     <p>BookOasis 컨테이너 안에서 접근할 경로를 입력하세요. 비워두면 <code>/app/db/series.full.sqlite</code>를 사용합니다.</p>
-  </section>
+    </section>
 
-  <section class="rabbit-setting">
+    <section class="rabbit-setting">
     <label class="rabbit-setting-label" for="rabbit-exclude-tags">제외할 태그</label>
     <input id="rabbit-exclude-tags" class="rabbit-setting-input" type="text" name="exclude_tags" placeholder="성장, 요괴">
     <p>쉼표(,)로 구분해 입력한 태그는 상세정보에서 숨깁니다.</p>
-  </section>
+    </section>
 
-  <section class="rabbit-setting">
+    <section class="rabbit-setting">
     <label class="rabbit-setting-label" for="rabbit-exclude-genres">제외할 장르</label>
     <input id="rabbit-exclude-genres" class="rabbit-setting-input" type="text" name="exclude_genres" placeholder="판타지, 액션">
     <p>쉼표(,)로 구분해 입력한 장르는 상세정보에서 숨깁니다.</p>
+    </section>
+    </div>
+  </section>
+
+  <section class="rabbit-setting rabbit-metadata-collector-setting">
+    <div class="rabbit-setting-group-heading">
+      <i class="fa-solid fa-database"></i>
+      <div><h3>자동 메타데이터 수집</h3><p>스캔 후 작품을 찾고, 선택한 제공처의 값을 DB에 저장합니다.</p></div>
+    </div>
+
+    <div class="rabbit-setting-panel rabbit-metadata-auto-toggle-panel">
+      <label class="rabbit-setting-toggle">
+        <input type="checkbox" name="metadata_auto_enabled">
+        <span>스캔 후 메타데이터 자동 수집</span>
+      </label>
+      <p>메타데이터가 비어 있는 신규 도서를 스캔 후 백그라운드에서 검색합니다. 파일명에 <code>연재</code>가 있으면 리디의 만화 연재 탭을 사용합니다.</p>
+    </div>
+
+    <div class="rabbit-metadata-source-fields-grid">
+      <div class="rabbit-setting-panel rabbit-metadata-source-panel">
+        <label class="rabbit-setting-label">검색 제공처 및 우선순위</label>
+        <div id="rabbit-metadata-sources" class="rabbit-metadata-sources" aria-label="메타데이터 제공처 순서"></div>
+        <input type="hidden" name="metadata_sources" value="series_db,ridi,naver,kyobo">
+        <p>손잡이를 끌어 순서를 바꾸고, 체크한 제공처만 검색합니다. 체크하지 않은 제공처는 검색하지 않습니다.</p>
+        <p>위에 있을수록 우선순위가 높습니다. 정확히 맞는 후보만 선택하며, 선택된 제공처의 값은 우선순서대로 빈 필드를 보완합니다. 링크는 중복을 제거해 합칩니다.</p>
+      </div>
+
+      <div class="rabbit-setting-subpanel rabbit-setting-fields-panel">
+        <label class="rabbit-setting-label">자동으로 가져올 필드</label>
+        <div class="rabbit-metadata-fields">
+          <label><input type="checkbox" data-metadata-field="title" checked> 제목</label>
+          <label><input type="checkbox" data-metadata-field="localized_series" checked> 원제</label>
+          <label><input type="checkbox" data-metadata-field="author" checked> 글작가</label>
+          <label><input type="checkbox" data-metadata-field="cover_artist" checked> 그림작가</label>
+          <label><input type="checkbox" data-metadata-field="publisher" checked> 출판사</label>
+          <label><input type="checkbox" data-metadata-field="summary" checked> 책 소개</label>
+          <label><input type="checkbox" data-metadata-field="genre" checked> 장르</label>
+          <label><input type="checkbox" data-metadata-field="tags" checked> 태그</label>
+          <label><input type="checkbox" data-metadata-field="release_date" checked> 발매일</label>
+          <label><input type="checkbox" data-metadata-field="isbn" checked> ISBN</label>
+          <label><input type="checkbox" data-metadata-field="link" checked> 관련 링크</label>
+        </div>
+        <input type="hidden" name="metadata_fields" value="title,localized_series,author,cover_artist,publisher,summary,genre,tags,release_date,isbn,link,cover">
+      </div>
+    </div>
+
+    <div class="rabbit-setting-panel rabbit-metadata-cover-panel">
+      <div class="rabbit-setting-panel-title"><i class="fa-solid fa-image"></i> 표지 및 덮어쓰기</div>
+      <div class="rabbit-metadata-cover-grid">
+        <div class="rabbit-metadata-cover-options">
+          <label class="rabbit-setting-toggle">
+            <input type="checkbox" name="metadata_collect_cover" checked>
+            <span>웹툰 표지 가져오기 활성화</span>
+          </label>
+          <div class="rabbit-cover-kind-setting">
+            <span class="rabbit-setting-label">표지를 가져올 자료 유형</span>
+            <div id="rabbit-metadata-cover-kinds" class="rabbit-choice-grid rabbit-metadata-cover-kinds" role="group" aria-label="표지를 수집할 자료 유형">
+              <span class="rabbit-setting-loading">속성 목록을 불러오는 중...</span>
+            </div>
+            <input type="hidden" name="metadata_cover_kinds" value="manga,novel,book,unspecified">
+            <p>선택한 라이브러리 유형에만 검색 결과 표지를 저장합니다. 전체 선택과 Shift 범위 선택을 지원합니다.</p>
+          </div>
+        </div>
+        <div class="rabbit-metadata-overwrite-options">
+          <label class="rabbit-setting-toggle">
+            <input type="checkbox" name="metadata_manual_overwrite">
+            <span>수동 메타데이터 적용 시 기존 값 덮어쓰기</span>
+          </label>
+          <p>메타데이터 검색에서 직접 선택한 결과를 적용할 때만 사용합니다. 자동 수집의 덮어쓰기 설정과는 별개이며, 관련 링크도 선택한 결과로 교체됩니다. 표지는 기존 표지 덮어쓰기 설정을 따릅니다.</p>
+          <label class="rabbit-setting-toggle">
+            <input type="checkbox" name="metadata_overwrite">
+            <span>기존 값 덮어쓰기</span>
+          </label>
+          <div class="rabbit-overwrite-kind-setting">
+            <span class="rabbit-setting-label">기존 메타데이터를 덮어쓸 자료 유형</span>
+            <div id="rabbit-metadata-overwrite-kinds" class="rabbit-choice-grid" role="group" aria-label="기존 메타데이터를 덮어쓸 자료 유형">
+              <span class="rabbit-setting-loading">속성 목록을 불러오는 중...</span>
+            </div>
+            <input type="hidden" name="metadata_overwrite_kinds" value="manga,novel,book,unspecified">
+            <p>기존 값 덮어쓰기를 켠 경우에만 적용됩니다. 전체 또는 Shift 범위 선택을 지원합니다.</p>
+          </div>
+          <label class="rabbit-setting-toggle">
+            <input type="checkbox" name="metadata_cover_overwrite">
+            <span>기존 표지 덮어쓰기</span>
+          </label>
+          <div class="rabbit-cover-overwrite-kind-setting">
+            <span class="rabbit-setting-label">기존 표지를 덮어쓸 자료 유형</span>
+            <div id="rabbit-metadata-cover-overwrite-kinds" class="rabbit-choice-grid" role="group" aria-label="기존 표지를 덮어쓸 자료 유형">
+              <span class="rabbit-setting-loading">속성 목록을 불러오는 중...</span>
+            </div>
+            <input type="hidden" name="metadata_cover_overwrite_kinds" value="manga,novel,book,unspecified">
+            <p>기존 표지 덮어쓰기를 켠 경우에만 적용됩니다. 전체 선택과 Shift 범위 선택을 지원합니다.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="rabbit-metadata-tools-grid">
+      <div class="rabbit-setting-panel rabbit-metadata-conversion-setting">
+        <div class="rabbit-setting-panel-title"><i class="fa-solid fa-arrow-right-arrow-left"></i> 값 변환</div>
+        <p>들어오는 값을 왼쪽에, 저장할 값을 오른쪽에 입력합니다. 한 줄에 하나의 규칙을 추가하세요.</p>
+        <label class="rabbit-setting-label">장르 변환</label>
+        <div id="rabbit-metadata-genre-rules" class="rabbit-conversion-rules" data-conversion-list="genre"></div>
+        <input type="hidden" name="metadata_genre_map" value="">
+        <button type="button" class="rabbit-add-rule-button" data-add-conversion="genre"><i class="fa-solid fa-plus"></i> 장르 규칙 추가</button>
+
+        <label class="rabbit-setting-label">출판사 변환</label>
+        <div id="rabbit-metadata-publisher-rules" class="rabbit-conversion-rules" data-conversion-list="publisher"></div>
+        <input type="hidden" name="metadata_publisher_map" value="">
+        <button type="button" class="rabbit-add-rule-button" data-add-conversion="publisher"><i class="fa-solid fa-plus"></i> 출판사 규칙 추가</button>
+      </div>
+
+      <div class="rabbit-setting-panel rabbit-metadata-search-setting">
+        <div class="rabbit-setting-panel-title"><i class="fa-solid fa-magnifying-glass"></i> 검색어 정리</div>
+        <label class="rabbit-setting-label" for="rabbit-metadata-search-remove">검색에서 제거할 키워드</label>
+        <textarea id="rabbit-metadata-search-remove" class="rabbit-setting-input rabbit-setting-textarea" name="metadata_search_remove_keywords" rows="3" placeholder="(리디)&#10;[미즈], 한정판"></textarea>
+        <p>메타데이터 검색어를 만들 때만 제거합니다. 쉼표, 세미콜론 또는 줄바꿈으로 구분하세요.</p>
+
+        <label class="rabbit-setting-label" for="rabbit-metadata-search-keep">검색에서 유지할 키워드</label>
+        <textarea id="rabbit-metadata-search-keep" class="rabbit-setting-input rabbit-setting-textarea" name="metadata_search_keep_keywords" rows="3" placeholder="THE POOL&#10;Coda"></textarea>
+        <p>제거 목록에 포함되어도 검색어에 남길 제목 구간입니다. 유지 목록이 제거보다 먼저 적용됩니다.</p>
+      </div>
+    </div>
+    <div class="rabbit-save-status" role="status" aria-live="polite"></div>
   </section>
 
   <section class="rabbit-setting rabbit-home-library-setting">

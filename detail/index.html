@@ -31,25 +31,31 @@
         <div class="ds-current" data-current></div>
       </section>
 
-      <section class="ds-info" aria-labelledby="ds-info-title">
+      <section class="ds-info" id="ds-info-panel" data-info-panel aria-labelledby="ds-info-title">
         <div class="ds-info-heading">
           <h2 id="ds-info-title">상세정보</h2>
-          <div class="ds-info-controls">
+          <div class="ds-info-heading-actions">
+            <button type="button" class="ds-mobile-info-close" data-action="mobile-info-close" aria-label="상세정보 닫기">닫기</button>
+            <div class="ds-info-controls">
             <button type="button" class="ds-unlock-button" data-role="detail-unlock-metadata" data-action="unlock-metadata" aria-label="메타데이터 잠금 해제" title="메타데이터 잠금 해제" hidden>
               <i class="fa-solid fa-lock-open" aria-hidden="true"></i><span>잠금 해제</span>
             </button>
             <button type="button" class="ds-edit-button" data-action="edit" aria-label="메타정보 편집" hidden>
               <i class="fa-solid fa-pen" aria-hidden="true"></i>
             </button>
+            <button type="button" class="ds-metadata-search-button" data-action="metadata-search-toggle" aria-label="메타데이터 검색" title="메타데이터 검색" hidden>
+              <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+            </button>
+            </div>
           </div>
         </div>
         <dl class="ds-facts" data-facts></dl>
         <div class="ds-rating-info"><span>평점</span><div class="ds-stars" data-stars role="group" aria-label="도서 평점"></div></div>
         <div class="ds-info-group" data-genres-block hidden>
-          <h3>Genres</h3><div class="ds-tags" data-genres></div>
+          <h3>장르</h3><div class="ds-tags" data-genres></div>
         </div>
         <div class="ds-info-group" data-tags-block hidden>
-          <h3>Tags</h3><div class="ds-tags" data-tags></div>
+          <h3>태그</h3><div class="ds-tags" data-tags></div>
         </div>
         <div class="ds-site-links" data-site-links hidden aria-label="관련 링크"></div>
       </section>
@@ -62,9 +68,13 @@
         <div class="ds-library-path" data-library-path></div>
         <h1 data-title></h1>
         <p class="ds-original-title" data-original-title hidden></p>
+        <button type="button" class="ds-mobile-info-toggle" data-action="mobile-info-toggle" aria-expanded="false" aria-controls="ds-info-panel">정보</button>
       </header>
 
       <section class="ds-description" aria-label="책 소개">
+        <div class="ds-section-heading ds-description-heading">
+          <div><h2>작품 소개</h2></div>
+        </div>
         <p class="ds-summary" data-summary></p>
         <button type="button" class="ds-more" data-action="summary" aria-expanded="false" hidden>더 보기</button>
       </section>
@@ -99,6 +109,20 @@
         </form>
       </section>
 
+      <section class="ds-metadata-search" data-metadata-search hidden>
+        <div class="ds-section-heading">
+          <div><h2>메타데이터 검색</h2><p>Series.db와 설정한 외부 제공처에서 후보를 찾아 선택한 도서에 적용합니다.</p></div>
+          <button type="button" class="ds-button" data-action="metadata-search-close">닫기</button>
+        </div>
+        <form class="ds-metadata-search-form" data-metadata-search-form>
+          <input type="search" data-metadata-query placeholder="시리즈명 또는 원제" autocomplete="off">
+          <div class="ds-metadata-source-options" data-metadata-source-options aria-label="검색 제공처"></div>
+          <button type="submit" class="ds-button ds-primary">검색</button>
+        </form>
+        <div class="ds-metadata-search-status" data-metadata-search-status role="status" aria-live="polite"></div>
+        <div class="ds-metadata-results" data-metadata-results></div>
+      </section>
+
       <section class="ds-series" data-series-section hidden>
         <div class="ds-section-heading">
           <div><h2>시리즈 둘러보기</h2><p data-series-description></p></div>
@@ -125,4 +149,5 @@
       </section>
     </main>
   </div>
+  <div class="ds-mobile-info-backdrop" data-mobile-info-backdrop hidden></div>
 </section>
