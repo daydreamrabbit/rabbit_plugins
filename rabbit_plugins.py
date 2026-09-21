@@ -2586,11 +2586,12 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         return self._queue_auto_collect(db_type, payload)
 
     def on_scan_completed(self, db_type, payload):
-        # New books are handled by on_scan_new_books_detected.  The completion
-        # hook retries existing rows on later scans without running the same
-        # series twice in one scan.
-        if int((payload or {}).get('new_books_count') or 0) > 0:
-            return {'success': True, 'skipped': True, 'message': '신규 도서는 기존 수집 훅에서 처리합니다.'}
+        # Always run the completion pass, including scans that reported new
+        # files.  The core emits the new-book and completion events on separate
+        # workers; if the first event is delayed or fails, skipping here would
+        # leave the newly scanned rows without any automatic collection.  The
+        # target query only selects rows with missing metadata, so a successful
+        # new-book pass makes this retry effectively a no-op.
         return self._queue_auto_collect(db_type, payload)
 
     def run_context_menu_action(self, db_type, action_id, context):
