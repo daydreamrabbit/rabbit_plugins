@@ -33,6 +33,9 @@
   let metadataRefreshTimer = null;
   let metadataRefreshAttempts = 0;
   let metadataRefreshInFlight = false;
+  // 상세 번들이 처음 그려지는 순간에도 다운로드 링크를 만들 수 있도록
+  // 허용을 기본값으로 두고, files 응답에서 명시적으로 거부된 경우만 막습니다.
+  let canDownload = true;
   let metadataSearchLoading = false;
   let metadataSearchResults = [];
   // Cover files keep the same path when they are replaced.  Change this
@@ -42,6 +45,9 @@
   let discoveryLoaded = false;
   let discoveryAttempted = false;
   let loadingDiscovery = false;
+  let discoveryRefreshQueued = false;
+  let discoveryLoadedKey = '';
+  let discoveryRenderedSignature = '';
   let loadingCollections = false;
   let noticeTimer;
   let fields = [
@@ -218,11 +224,53 @@
     return new Set(String(value || '').split(',').map((term) => term.trim().toLocaleLowerCase()).filter(Boolean));
   }
 
-  function fileFormatBadge(value) {
+  function triggerDownload(downloadUrl) {
+    notify('다운로드를 시작했습니다.');
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.setAttribute('download', '');
+    link.hidden = true;
+    document.body.append(link);
+    requestAnimationFrame(() => {
+      link.click();
+      setTimeout(() => link.remove(), 0);
+    });
+  }
+
+  function fileFormatBadge(value, book = null, options = {}) {
     const format = String(value || '').trim().toUpperCase();
     if (!format) return null;
     const kind = ['CBZ', 'EPUB', 'PDF', 'ZIP'].includes(format) ? format.toLowerCase() : 'other';
-    return node('span', 'ds-file-format ds-file-format-' + kind, format);
+    const downloadable = Boolean(book?.id)
+      && canDownload
+      && ['EPUB', 'PDF', 'TXT'].includes(format);
+    const asAnchor = downloadable && options.anchor === true;
+    const badge = node(asAnchor ? 'a' : 'span', 'ds-file-format ds-file-format-' + kind
+      + (downloadable ? ' ds-file-format-download' : ''), format);
+    if (downloadable) {
+      const downloadUrl = '/api/media/books/' + encodeURIComponent(book.id)
+        + '/download?type=' + encodeURIComponent(type);
+      badge.setAttribute('data-role', 'detail-download-link');
+      badge.setAttribute('aria-label', format + ' 파일 다운로드');
+      badge.title = format + ' 파일 다운로드';
+      if (asAnchor) {
+        badge.href = downloadUrl;
+        badge.setAttribute('download', '');
+        return badge;
+      }
+      badge.setAttribute('role', 'button');
+      badge.tabIndex = 0;
+      const startDownload = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        triggerDownload(downloadUrl);
+      };
+      badge.addEventListener('click', startDownload);
+      badge.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') startDownload(event);
+      });
+    }
+    return badge;
   }
 
   function formatDate(value) {
@@ -546,6 +594,11 @@
 
   function metadataNeedsRefresh() {
     if (!metadataAutoEnabled || !metadataFields.length) return false;
+    // `has_metadata` is the server's completion signal.  A selected field
+    // such as localized_series can legitimately remain empty when the chosen
+    // providers do not supply it.  Treating that optional value as an active
+    // collection would keep polling an already completed detail forever.
+    if (Number(meta.has_metadata) === 1) return false;
     // The provider intentionally keeps the filename-derived volume title.
     return metadataFields.some((field) => {
       if (field === 'title') return false;
@@ -571,6 +624,7 @@
   }
 
   async function refreshMetadataFromServer() {
+    const beforeDiscoveryKey = discoveryInputKey();
     const params = new URLSearchParams({
       type,
       series: context.seriesName,
@@ -589,9 +643,10 @@
     await loadDetailData(false);
     coverRevision += 1;
     renderMetadataRefresh();
-    // Metadata polling can update several fields one after another. Refresh
-    // discovery in place so recommendation cards do not flash on every poll.
-    loadDiscovery({ refresh: true });
+    // 표지·설명처럼 추천 기준과 무관한 필드가 바뀔 때는 추천 API를
+    // 다시 호출하지 않습니다. 작가·장르·태그·제목이 실제로 바뀐 경우에만
+    // 새 후보를 조회하고, 기존 카드는 조회가 끝날 때까지 유지합니다.
+    if (beforeDiscoveryKey !== discoveryInputKey()) loadDiscovery({ refresh: true });
     return true;
   }
 
@@ -629,6 +684,53 @@
     const bookId = media ? meta.id : books[0]?.id;
     const params = new URLSearchParams({ type, book_id: String(bookId || ''), mode, limit: '18' });
     return '/api/media/dashboard/widgets/' + encodeURIComponent(pluginId) + '/data?' + params;
+  }
+
+  // 추천/관련 작품은 작가·장르·태그·작품 식별 정보가 바뀔 때만 다시
+  // 조회합니다. 자동 메타데이터 수집이 표지나 설명을 채우는 동안에는
+  // 같은 추천 결과를 다시 그리지 않아 카드 이미지가 깜빡이지 않습니다.
+  function discoveryInputKey() {
+    return JSON.stringify({
+      type,
+      series: meta.series_name || context.seriesName || '',
+      alias: meta.series_alias || '',
+      localized: meta.localized_series || '',
+      author: meta.author || '',
+      genre: meta.genre || '',
+      tags: meta.tags || '',
+      contentKind: contentKind || '',
+    });
+  }
+
+  function discoveryItemKey(item, label = '') {
+    return [
+      label,
+      item?.book_id || item?.id || '',
+      item?.series_name || '',
+      item?.display_name || '',
+      item?.localized_series || '',
+      item?.cover || '',
+      item?.library_id || '',
+    ];
+  }
+
+  function discoveryPayloadSignature(data) {
+    const relations = Object.entries(data?.relations || {}).map(([label, items]) => [
+      label,
+      (Array.isArray(items) ? items : []).map((item) => discoveryItemKey(item, label)),
+    ]);
+    const recommendations = (Array.isArray(data?.recommendations) ? data.recommendations : [])
+      .map((item) => discoveryItemKey(item));
+    return JSON.stringify({ relations, recommendations });
+  }
+
+  function renderDiscoveryPayload(data) {
+    const signature = discoveryPayloadSignature(data);
+    if (signature === discoveryRenderedSignature) return false;
+    renderRelations(data.relations || {});
+    renderRecommendations(data.recommendations || []);
+    discoveryRenderedSignature = signature;
+    return true;
   }
 
   function allowNavigation() {
@@ -902,8 +1004,16 @@
       art.append(overlay);
     }
 
-    button.append(art, node('span', 'ds-book-title', label));
+    // The cover is the only part of a series card that starts reading. Keep
+    // the title, status, progress and file format outside the button so that
+    // a downloadable format is a real independent link and cannot be
+    // swallowed by the reader button.
+    button.append(art);
+    const titleNode = node('span', 'ds-book-title', label);
+    let subtitle = null;
+    let progressDisplay = null;
     if (linked) {
+      button.append(titleNode);
       const originalTitle = String(book.localized_series || '').trim();
       if (originalTitle) button.append(node('span', 'ds-book-subtitle', originalTitle));
       button.addEventListener('click', async () => {
@@ -924,24 +1034,32 @@
         : reading(book)
           ? progress(book) + '% ' + (media ? '재생' : '읽음')
           : (media ? '미재생' : '미독');
-      const subtitle = node('span', 'ds-book-subtitle');
-      const format = fileFormatBadge(book.file_format);
+      subtitle = node('span', 'ds-book-subtitle');
+      const format = fileFormatBadge(book.file_format, book, { anchor: true });
       if (format) subtitle.append(format, document.createTextNode(' · '));
       subtitle.append(document.createTextNode(state));
-      button.append(subtitle);
       const percent = progress(book);
-      const progressDisplay = node('span', 'ds-book-progress');
+      progressDisplay = node('span', 'ds-book-progress');
       const bar = document.createElement('progress');
       bar.max = 100;
       bar.value = percent;
       bar.setAttribute('aria-label', label + ' 진행률');
       progressDisplay.append(bar, node('small', 'ds-book-progress-value', percent + '%'));
-      button.append(progressDisplay);
-      button.addEventListener('click', () => read(book));
+      button.addEventListener('click', (event) => {
+        // 시리즈 카드는 표지 영역만 읽기 동작을 담당합니다. 제목·진행률·
+        // 미독 상태를 눌렀을 때는 상세 화면을 다시 열거나 읽기를 시작하지
+        // 않습니다. 다운로드 가능한 파일 형식 배지는 자체 동작을 가집니다.
+        if (!event.target.closest('.ds-book-art')) return;
+        read(book);
+      });
     }
 
     if (relationLabel) card.append(node('span', 'ds-relation-label', relationLabel));
-    card.append(button);
+    if (linked) {
+      card.append(button);
+    } else {
+      card.append(button, titleNode, subtitle, progressDisplay);
+    }
     return card;
   }
 
@@ -1102,7 +1220,7 @@
       if (label === '파일포맷' && formats.length) {
         formats.forEach((format, index) => {
           if (index) detail.append(document.createTextNode(' / '));
-          detail.append(fileFormatBadge(format));
+          detail.append(fileFormatBadge(format, books.length === 1 ? books[0] : null, { anchor: true }));
         });
       } else if ((label === '글작가' || label === '그림작가') && value && value !== '—') {
         split(value).forEach((name, index) => {
@@ -1627,6 +1745,7 @@
       metadataSources = Array.isArray(data.metadata_sources) ? data.metadata_sources : metadataSources;
       metadataAutoEnabled = data.metadata_auto_enabled === true;
       metadataFields = Array.isArray(data.metadata_fields) ? data.metadata_fields : metadataFields;
+      canDownload = data.can_download !== false;
       const currentBooks = new Map(books.map((book) => [Number(book.id), book]));
       for (const file of data.files || []) {
         const book = currentBooks.get(Number(file.id));
@@ -1693,7 +1812,12 @@
   }
 
   async function loadDiscovery({ refresh = false } = {}) {
-    if ((discoveryLoaded && !refresh) || loadingDiscovery) return;
+    const requestKey = discoveryInputKey();
+    if (discoveryLoaded && (!refresh || discoveryLoadedKey === requestKey)) return;
+    if (loadingDiscovery) {
+      if (refresh) discoveryRefreshQueued = true;
+      return;
+    }
     const loading = $('[data-discovery-loading]');
     const hasExistingResults = discoveryLoaded || discoveryAttempted;
     if (!books.length) {
@@ -1715,9 +1839,15 @@
     try {
       const data = await request(apiUrl('discovery'));
       if (!root.isConnected) return;
-      renderRelations(data.relations || {});
-      renderRecommendations(data.recommendations || []);
+      // 메타데이터가 응답 중간에 바뀌었다면 이전 기준의 결과를 화면에
+      // 덮어쓰지 않고 최신 기준으로 한 번만 다시 요청합니다.
+      if (requestKey !== discoveryInputKey()) {
+        discoveryRefreshQueued = true;
+        return;
+      }
+      renderDiscoveryPayload(data);
       discoveryLoaded = true;
+      discoveryLoadedKey = requestKey;
     } catch (error) {
       if (root.isConnected && !hasExistingResults) {
         loading.textContent = '관련작품과 추천항목을 불러오지 못했습니다. ' + error.message;
@@ -1729,6 +1859,10 @@
       if (!hasExistingResults || discoveryLoaded) {
         loading.hidden = true;
         delete loading.dataset.state;
+      }
+      if (discoveryRefreshQueued && root.isConnected) {
+        discoveryRefreshQueued = false;
+        queueMicrotask(() => loadDiscovery({ refresh: true }));
       }
     }
   }
@@ -1937,6 +2071,17 @@
         event.returnValue = '';
       }
     };
+    // The core detail delegator handles this role at document level and can
+    // stop propagation before an individual anchor listener runs. Handle the
+    // download in capture phase so the toast and download start together.
+    const handleDownloadClick = (event) => {
+      const target = event.target.closest?.('[data-role="detail-download-link"]');
+      if (!target || !root.contains(target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      triggerDownload(target.href);
+    };
+    document.addEventListener('click', handleDownloadClick, true);
     document.addEventListener('click', stopNavigation, true);
     document.addEventListener('click', closeMenuOnOutsideClick);
     document.addEventListener('keydown', closeMenuOnEscape);
@@ -1947,6 +2092,7 @@
     summaryObserver.observe($('.ds-description'));
     const observer = new MutationObserver(() => {
       if (root.isConnected) return;
+      document.removeEventListener('click', handleDownloadClick, true);
       document.removeEventListener('click', stopNavigation, true);
       document.removeEventListener('click', closeMenuOnOutsideClick);
       document.removeEventListener('keydown', closeMenuOnEscape);
