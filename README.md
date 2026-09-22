@@ -2,7 +2,7 @@
 
 BookOasis용 AniList 스타일 상세페이지 렌더러입니다. Detail Studio의 메타데이터 처리 기반을 사용하되, 별도 플러그인 ID `rabbit_plugins`로 동작합니다.
 
-- 플러그인 버전: `2.1.4`
+- 플러그인 버전: `2.1.5`
 - 1차 개발 상태: 완료
 - 라이선스: GNU AGPL v3 (`LICENSE` 참조)
 
