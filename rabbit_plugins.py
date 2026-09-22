@@ -662,7 +662,10 @@ def _metadata_title_matches(query, candidate_title, allow_partial=False):
 def _metadata_source_variant_score(candidate, content_kind, book_type):
     """Prefer the configured media type when a source has exact duplicates."""
     source = str(candidate.get('source') or '').casefold()
-    title = str(candidate.get('title') or '').casefold()
+    title = ' '.join(
+        str(candidate.get(key) or '')
+        for key in ('title', 'variant_label', 'genre')
+    ).casefold()
     url = str(candidate.get('url') or '').casefold()
     score = 0
     if source == 'ridi':
