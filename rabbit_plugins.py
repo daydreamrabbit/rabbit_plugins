@@ -58,7 +58,7 @@ from xml.etree import ElementTree as ET
 from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 
-PLUGIN_VERSION = '2.1.1'
+PLUGIN_VERSION = '2.1.2'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -300,7 +300,7 @@ def _ridi_search_title(value):
     """Clean provider-only labels from a Ridi search result title."""
     text = _metadata_title(value)
     return re.sub(
-        r'^\s*(?:\[\s*(?:e북|전자책|웹툰|연재)\s*\]|【\s*(?:e북|전자책|웹툰|연재)\s*】)\s*',
+        r'^\s*(?:\[\s*(?:e북|전자책|웹툰|연재|웹소설|라이트노벨|라노벨|소설)\s*\]|【\s*(?:e북|전자책|웹툰|연재|웹소설|라이트노벨|라노벨|소설)\s*】)\s*',
         '', text, count=1, flags=re.IGNORECASE)
 
 
@@ -645,10 +645,18 @@ def _metadata_match_key(value):
     return _title_key(text)
 
 
-def _metadata_title_matches(query, candidate_title):
+def _metadata_title_matches(query, candidate_title, allow_partial=False):
     query_key = _metadata_match_key(query)
     candidate_key = _metadata_match_key(candidate_title)
-    return bool(query_key and candidate_key and query_key == candidate_key)
+    if not query_key or not candidate_key:
+        return False
+    if query_key == candidate_key:
+        return True
+    # Manual searches may intentionally use a shortened work title.  Keep
+    # automatic collection exact, while allowing an entered title prefix (or
+    # a provider's longer canonical title) in the manual result list.
+    return bool(allow_partial and (
+        query_key in candidate_key or candidate_key in query_key))
 
 
 def _metadata_source_variant_score(candidate, content_kind, book_type):
@@ -1454,7 +1462,6 @@ def _ridi_variant_label(title='', book=None, item=None, book_type=''):
     kind = str(book_type or '').strip().casefold()
     by_type = {
         'webtoon': '웹툰',
-        'novel': '라이트노벨',
         'series': '만화 연재',
         'single': '만화 e북',
         'book': '도서',
@@ -1487,12 +1494,18 @@ def _ridi_variant_label(title='', book=None, item=None, book_type=''):
     text = ' '.join(values).casefold()
     if '웹툰' in text:
         return '웹툰'
+    if '웹소설' in text:
+        return '웹소설'
     if '라이트노벨' in text or '라노벨' in text:
         return '라이트노벨'
     if '연재' in text:
         return '만화 연재'
     if 'e북' in text or '전자책' in text or '단행본' in text:
         return '만화 e북'
+    if '소설' in text:
+        return '소설'
+    if kind == 'novel':
+        return '소설'
     return ''
 
 
@@ -1507,15 +1520,25 @@ def _metadata_display_title(query, title):
     return title_text
 
 
-def _remote_source_url(source, query, content_kind, book_type=''):
+def _remote_source_url(source, query, content_kind, book_type='',
+                       all_categories=False):
     encoded = quote_plus(str(query or '').strip())
     if source == 'ridi':
         kind = str(content_kind or '').casefold()
         ridi_type = str(book_type or '').casefold()
+        if all_categories and not ridi_type:
+            # The core's generic manual-search endpoint does not pass the
+            # selected book's library content kind.  Search all Ridi tabs in
+            # that case so a novel is not incorrectly forced into COMIC.
+            return f'https://ridibooks.com/search?q={encoded}&tab=ALL&page=1'
         if ridi_type == 'webtoon' or kind == 'manhwa':
             return f'https://ridibooks.com/search?q={encoded}&adult_exclude=n&tab=WEBTOON&page=1'
         if ridi_type == 'novel' or kind == 'novel':
-            tab = 'LIGHT_NOVEL'
+            # ``LIGHT_NOVEL`` excludes Ridi's general/web novel catalogue.
+            # The novel tab includes web novels, light novels, and novel
+            # e-books; the result label below still preserves the provider's
+            # more specific category when it is present in the payload.
+            tab = 'NOVEL'
             return f'https://ridibooks.com/search?q={encoded}&tab={tab}&page=1'
         if ridi_type == 'book' or kind == 'book':
             return f'https://ridibooks.com/search?q={encoded}&tab=BOOK&page=1'
@@ -1531,8 +1554,11 @@ def _remote_source_url(source, query, content_kind, book_type=''):
     return ''
 
 
-def _remote_search(source, query, content_kind, book_type='', limit=8):
-    url = _remote_source_url(source, query, content_kind, book_type)
+def _remote_search(source, query, content_kind, book_type='', limit=8,
+                   allow_partial=False, all_categories=False):
+    url = _remote_source_url(
+        source, query, content_kind, book_type,
+        all_categories=all_categories)
     if not url:
         return []
     try:
@@ -1569,10 +1595,11 @@ def _remote_search(source, query, content_kind, book_type='', limit=8):
                 title_value = title_value.get('main') or title_value.get('title') or title_value.get('name') or ''
             title = _ridi_search_title(title_value)
             # NextData sometimes contains a book description or a related
-            # product in the same ``books`` array.  Only show the work whose
-            # normalized title exactly matches the requested series.
+            # product in the same ``books`` array.  Automatic collection only
+            # accepts exact titles; manual searches may use a shortened title.
             if (len(title) < 2 or _metadata_variant_excluded(title)
-                    or not _metadata_title_matches(query, title)):
+                    or not _metadata_title_matches(query, title,
+                                                    allow_partial=allow_partial)):
                 continue
             title = _metadata_display_title(query, title)
             authors = book.get('authors') or item.get('author') or item.get('authors') or item.get('writer')
@@ -1606,11 +1633,10 @@ def _remote_search(source, query, content_kind, book_type='', limit=8):
         title = _ridi_search_title(_html_text(link.get('text') or '')) if source == 'ridi' else _metadata_title(_html_text(link.get('text') or ''))
         if len(title) < 2 or title.casefold() in {'검색', '상세보기', '더보기'} or _metadata_variant_excluded(title):
             continue
-        # Keep the manual result list limited to the requested work as well;
-        # a substring match lets a related title or a description heading
-        # leak into the cards (for example ``극채의 집`` plus an unrelated
-        # book whose description happens to contain that phrase).
-        if not _metadata_title_matches(query, title):
+        # Keep results tied to the title.  Partial matching is enabled only
+        # for an explicit manual search, so automatic collection cannot merge
+        # an unrelated work whose description happens to contain the query.
+        if not _metadata_title_matches(query, title, allow_partial=allow_partial):
             continue
         title = _metadata_display_title(query, title)
         seen.add(href)
@@ -1744,7 +1770,11 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
 
     def search(self, db_type, query):
         config = self.get_plugin_config(db_type or 'general', {}) or {}
-        return self._search_metadata(str(query or '').strip(), config, db_type)
+        # The provider search endpoint is an explicit manual search.  It may
+        # return a longer canonical title for a shortened query; automatic
+        # scan collection keeps its exact-title policy below.
+        return self._search_metadata(
+            str(query or '').strip(), config, db_type, manual=True)
 
     def apply(self, db_type, book_id, item_data):
         if not has_request_context() or session.get('role') != 'admin':
@@ -1757,7 +1787,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         gateway = self.get_db_gateway(db_type or 'general')
         return self._apply_metadata(gateway, book_id, item_data or {}, config, manual=True)
 
-    def _search_metadata(self, query, config, db_type='general', content_kind=None, book_type=''):
+    def _search_metadata(self, query, config, db_type='general', content_kind=None,
+                         book_type='', manual=False):
         query = _metadata_search_query(query, config)
         if len(query) < 2:
             return []
@@ -1766,11 +1797,16 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         # Candidate filtering and media-type labels are part of the result
         # shape; invalidate older cached cards that may contain description
         # rows from the unfiltered Ridi response.
-        # v7 intentionally invalidates the older cache, which could contain an
+        # v8 intentionally invalidates the older cache, which could contain an
         # empty response from a transient NAS/proxy failure.  Empty searches
         # are not cached so a later scan can retry the provider immediately.
-        cache_key = 'metadata-search:v7:' + hashlib.sha256(
-            json.dumps([query, content_kind, book_type, _metadata_source_order(config)], ensure_ascii=False).encode()
+        # Manual and automatic searches have different title matching rules,
+        # so they must never share a cache entry.
+        cache_key = 'metadata-search:v8:' + hashlib.sha256(
+            json.dumps([
+                query, content_kind, book_type,
+                _metadata_source_order(config), bool(manual),
+            ], ensure_ascii=False).encode()
         ).hexdigest()
         try:
             cached = self.cache_get(cache_key)
@@ -1785,7 +1821,12 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             if source == 'series_db':
                 candidates = self._series_db_search(query, content_kind)
             else:
-                candidates = _remote_search(source, query, content_kind, book_type)
+                candidates = _remote_search(
+                    source, query, content_kind, book_type,
+                    allow_partial=bool(manual),
+                    all_categories=bool(manual and source == 'ridi'
+                                       and not book_type
+                                       and content_kind == 'manga'))
             for candidate in candidates:
                 key = str(candidate.get('url') or candidate.get('id') or '').casefold()
                 if not key or key in seen:
@@ -2632,7 +2673,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                     pass
             search_query = _metadata_search_query(query, config)
             results = self._search_metadata(
-                search_query, config, db_type, content_kind, book_type)
+                search_query, config, db_type, content_kind, book_type,
+                manual=True)
             return {'success': True, 'results': results, 'query': search_query}
         if action_id == 'metadata_apply':
             if not has_request_context() or session.get('role') != 'admin':
