@@ -58,7 +58,7 @@ from xml.etree import ElementTree as ET
 from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 
-PLUGIN_VERSION = '2.1.3'
+PLUGIN_VERSION = '2.1.4'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -1512,6 +1512,43 @@ def _ridi_variant_label(title='', book=None, item=None, book_type=''):
     return ''
 
 
+def _ridi_book_type_allowed(book_type, title='', book=None, item=None):
+    """Keep novel searches from surfacing a comic edition from mixed pages."""
+    if str(book_type or '').strip().casefold() != 'novel':
+        return True
+    values = [title]
+    category_values = []
+    for payload in (book, item):
+        if not isinstance(payload, dict):
+            continue
+        categories = payload.get('categories')
+        if isinstance(categories, list):
+            category_values.extend(
+                str(category.get('name') if isinstance(category, dict) else category)
+                for category in categories if category
+            )
+        for key in ('category', 'category_name', 'categoryName', 'type', 'book_type',
+                    'bookType', 'series_type', 'seriesType', 'publication_type',
+                    'publicationType', 'kind', 'tab', 'tab_name', 'tabName'):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                value = value.get('name') or value.get('label') or value.get('title')
+            if isinstance(value, (list, tuple)):
+                value = ' '.join(str(part) for part in value)
+            if value:
+                values.append(str(value))
+    text = ' '.join(values + category_values).casefold()
+    has_novel = bool(re.search(r'웹소설|라이트노벨|라노벨|소설', text))
+    has_comic = bool(re.search(r'만화|웹툰', text))
+    if category_values:
+        # Ridi's mixed search response can include a comic edition even on
+        # the WEBNOVEL page. Category names are the reliable discriminator;
+        # a generic "판타지 e북" entry must not pass as a novel.
+        category_text = ' '.join(category_values).casefold()
+        return bool(re.search(r'웹소설|라이트노벨|라노벨|소설', category_text))
+    return not has_comic or has_novel
+
+
 def _metadata_display_title(query, title):
     """Use the searched spelling for a title that differs only by spacing."""
     query_text = _metadata_title(query)
@@ -1537,11 +1574,10 @@ def _remote_source_url(source, query, content_kind, book_type='',
         if ridi_type == 'webtoon' or kind == 'manhwa':
             return f'https://ridibooks.com/search?q={encoded}&adult_exclude=n&tab=WEBTOON&page=1'
         if ridi_type == 'novel' or kind == 'novel':
-            # ``LIGHT_NOVEL`` excludes Ridi's general/web novel catalogue.
-            # The novel tab includes web novels, light novels, and novel
-            # e-books; the result label below still preserves the provider's
-            # more specific category when it is present in the payload.
-            tab = 'NOVEL'
+            # Ridi's current search page has no populated NOVEL parent tab.
+            # Web novels, light novels, and general novel e-books are exposed
+            # through WEBNOVEL, LIGHT_NOVEL, and BOOK/NOVEL respectively.
+            tab = 'WEBNOVEL'
             return f'https://ridibooks.com/search?q={encoded}&tab={tab}&page=1'
         if ridi_type == 'book' or kind == 'book':
             return f'https://ridibooks.com/search?q={encoded}&tab=BOOK&page=1'
@@ -1557,11 +1593,34 @@ def _remote_source_url(source, query, content_kind, book_type='',
     return ''
 
 
-def _remote_search(source, query, content_kind, book_type='', limit=8,
-                   allow_partial=False, all_categories=False):
-    url = _remote_source_url(
+def _remote_source_urls(source, query, content_kind, book_type='',
+                        all_categories=False):
+    """Return the provider pages needed for one metadata search.
+
+    Ridi splits the novel catalogue across three tabs. Query all of them for
+    a novel library so a web novel is not hidden by a light-novel-only or
+    invalid aggregate tab.
+    """
+    primary = _remote_source_url(
         source, query, content_kind, book_type,
         all_categories=all_categories)
+    if source != 'ridi':
+        return [primary] if primary else []
+    kind = str(content_kind or '').casefold()
+    ridi_type = str(book_type or '').casefold()
+    if ridi_type != 'novel' and kind != 'novel':
+        return [primary] if primary else []
+    encoded = quote_plus(str(query or '').strip())
+    return [
+        primary,
+        f'https://ridibooks.com/search?q={encoded}&tab=LIGHT_NOVEL&page=1',
+        f'https://ridibooks.com/search?q={encoded}&tab=BOOK&child_tab=NOVEL&page=1',
+    ]
+
+
+def _remote_search_page(source, query, content_kind, book_type='', limit=8,
+                        allow_partial=False, url_override=''):
+    url = url_override or _remote_source_url(source, query, content_kind, book_type)
     if not url:
         return []
     try:
@@ -1584,7 +1643,8 @@ def _remote_search(source, query, content_kind, book_type='', limit=8,
     result = []
     seen = set()
     if source == 'ridi':
-        for item in _next_data_books(response.text):
+        next_data_items = _next_data_books(response.text)
+        for item in next_data_items:
             book_id = item.get('id') or item.get('book_id') or item.get('bookId')
             if not book_id:
                 continue
@@ -1601,6 +1661,7 @@ def _remote_search(source, query, content_kind, book_type='', limit=8,
             # product in the same ``books`` array.  Automatic collection only
             # accepts exact titles; manual searches may use a shortened title.
             if (len(title) < 2 or _metadata_variant_excluded(title)
+                    or not _ridi_book_type_allowed(book_type, title, book, item)
                     or not _metadata_title_matches(query, title,
                                                     allow_partial=allow_partial)):
                 continue
@@ -1629,10 +1690,21 @@ def _remote_search(source, query, content_kind, book_type='', limit=8,
             })
             if len(result) >= limit:
                 return result
+        # The current Ridi page always includes structured Next.js results.
+        # Do not fall through to navigation links, whose labels can describe
+        # a neighboring edition and reintroduce a comic as a novel result.
+        if next_data_items:
+            return result
     for link in parser.links:
         href = urljoin(url, link.get('href') or '')
         if not _source_result_filter(source, href) or href in seen:
             continue
+        if source == 'ridi':
+            book_id_match = re.search(r'/books/(\d+)', href)
+            if book_id_match:
+                href = f'https://ridibooks.com/books/{book_id_match.group(1)}'
+                if href in seen:
+                    continue
         title = _ridi_search_title(_html_text(link.get('text') or '')) if source == 'ridi' else _metadata_title(_html_text(link.get('text') or ''))
         if len(title) < 2 or title.casefold() in {'검색', '상세보기', '더보기'} or _metadata_variant_excluded(title):
             continue
@@ -1658,6 +1730,33 @@ def _remote_search(source, query, content_kind, book_type='', limit=8,
         if len(result) >= limit:
             break
     return result
+
+
+def _remote_search(source, query, content_kind, book_type='', limit=8,
+                   allow_partial=False, all_categories=False):
+    """Search one provider, combining Ridi's split novel catalogues."""
+    results = []
+    seen = set()
+    for url in _remote_source_urls(
+            source, query, content_kind, book_type,
+            all_categories=all_categories):
+        remaining = max(0, int(limit or 0) - len(results))
+        if remaining <= 0:
+            break
+        page_results = _remote_search_page(
+            source, query, content_kind, book_type,
+            limit=remaining, allow_partial=allow_partial,
+            url_override=url)
+        for candidate in page_results:
+            key = str(candidate.get('url') or candidate.get('id') or '').casefold()
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            results.append(candidate)
+            if len(results) >= limit:
+                break
+    return results[:limit]
 
 
 def _remote_fetch_metadata(url, source):
