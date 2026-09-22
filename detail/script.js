@@ -241,9 +241,11 @@
     const format = String(value || '').trim().toUpperCase();
     if (!format) return null;
     const kind = ['CBZ', 'EPUB', 'PDF', 'ZIP'].includes(format) ? format.toLowerCase() : 'other';
+    // 원본 파일이 없는 IMGDIR을 제외한 모든 도서 포맷은 코어 다운로드 API로 전달한다.
+    // 실제 접근 가능 여부는 서버의 사용자 다운로드/서재/연령 권한 검사가 최종 판정한다.
     const downloadable = Boolean(book?.id)
       && canDownload
-      && ['EPUB', 'PDF', 'TXT'].includes(format);
+      && format !== 'IMGDIR';
     const asAnchor = downloadable && options.anchor === true;
     const badge = node(asAnchor ? 'a' : 'span', 'ds-file-format ds-file-format-' + kind
       + (downloadable ? ' ds-file-format-download' : ''), format);
@@ -964,6 +966,11 @@
         seriesName: meta.series_name || context.seriesName,
         libraryId: book.library_id ?? libraryId ?? context.libraryId,
         markUnreadScope: 'book',
+        fileFormat: String(book.file_format || '').toLowerCase(),
+        // The core menu uses this flag to choose the symmetric read/unread
+        // action.  Plugin-rendered cards do not carry the core card's
+        // data-has-progress attribute, so pass the state explicitly.
+        hasProgress: completed(book) || progress(book) > 0,
       });
     });
   }
@@ -1831,8 +1838,10 @@
     loading.setAttribute('aria-busy', 'true');
     if (!hasExistingResults) {
       loading.removeAttribute('data-state');
-      loading.hidden = false;
-      loading.textContent = '관련작품과 추천항목을 불러오고 있습니다.';
+      // 관련/추천 결과가 준비되기 전에는 빈 공간만 유지한다. 매우 짧게 나타났다
+      // 사라지는 로딩 문구가 상세 진입과 뷰어 복귀 때 화면을 깜빡이게 만들었다.
+      loading.hidden = true;
+      loading.textContent = '';
       renderRelations({});
       renderRecommendations([]);
     }
