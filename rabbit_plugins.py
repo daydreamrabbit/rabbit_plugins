@@ -58,7 +58,7 @@ from xml.etree import ElementTree as ET
 from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 
-PLUGIN_VERSION = '2.1.5'
+PLUGIN_VERSION = '2.1.6'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -119,6 +119,36 @@ def _config_list(value, allowed):
 def _metadata_source_order(config):
     configured = _config_list(config.get('metadata_sources'), METADATA_SOURCES)
     return configured or list(METADATA_SOURCES)
+
+
+def _metadata_content_kind(value):
+    """Normalize core/custom library labels before choosing provider tabs."""
+    text = str(value or '').strip().casefold()
+    if text in ('novel', '소설', '라노벨', '라이트노벨', '웹소설'):
+        return 'novel'
+    if text in ('manga', '만화', 'comic', 'comics'):
+        return 'manga'
+    if text in ('manhwa', '웹툰'):
+        return 'manhwa'
+    if text in ('book', '도서'):
+        return 'book'
+    return text
+
+
+def _metadata_book_type_value(value):
+    """Normalize a media type supplied by an older core/detail bundle."""
+    text = str(value or '').strip().casefold()
+    if text in ('novel', '소설', '라노벨', '라이트노벨', '웹소설'):
+        return 'novel'
+    if text in ('webtoon', '웹툰'):
+        return 'webtoon'
+    if text in ('series', '연재', '만화 연재'):
+        return 'series'
+    if text in ('single', '단행', '단행본', '만화 e북', '만화 ebook'):
+        return 'single'
+    if text in ('book', '도서'):
+        return 'book'
+    return text
 
 
 def _metadata_value_map(value):
@@ -1436,7 +1466,14 @@ def _source_link(value, source):
 
 def _metadata_book_type(content_kind, title='', file_path=''):
     """Map a library/file to the Ridi search category used by the crawlers."""
-    kind = str(content_kind or '').strip().casefold()
+    kind = _metadata_content_kind(content_kind)
+    if kind in ('', 'unspecified'):
+        extension = Path(str(file_path or '').replace('\\', '/')).suffix.casefold()
+        # Older cores may return ``unspecified`` while the library actually
+        # contains text ebooks.  Use the file format as a search hint so a
+        # manual Ridi search is not incorrectly sent to the comic catalogue.
+        if extension in {'.epub', '.epub3', '.mobi', '.azw', '.azw3', '.fb2', '.txt', '.rtf'}:
+            return 'novel'
     title_text = str(title or '').strip()
     file_name = os.path.basename(str(file_path or '').replace('\\', '/')).strip()
     text = f'{title_text} {file_name}'.strip()
@@ -1514,7 +1551,7 @@ def _ridi_variant_label(title='', book=None, item=None, book_type=''):
 
 def _ridi_book_type_allowed(book_type, title='', book=None, item=None):
     """Keep novel searches from surfacing a comic edition from mixed pages."""
-    if str(book_type or '').strip().casefold() != 'novel':
+    if _metadata_book_type_value(book_type) != 'novel':
         return True
     values = [title]
     category_values = []
@@ -1564,8 +1601,8 @@ def _remote_source_url(source, query, content_kind, book_type='',
                        all_categories=False):
     encoded = quote_plus(str(query or '').strip())
     if source == 'ridi':
-        kind = str(content_kind or '').casefold()
-        ridi_type = str(book_type or '').casefold()
+        kind = _metadata_content_kind(content_kind)
+        ridi_type = _metadata_book_type_value(book_type)
         if all_categories and not ridi_type:
             # The core's generic manual-search endpoint does not pass the
             # selected book's library content kind.  Search all Ridi tabs in
@@ -1606,8 +1643,8 @@ def _remote_source_urls(source, query, content_kind, book_type='',
         all_categories=all_categories)
     if source != 'ridi':
         return [primary] if primary else []
-    kind = str(content_kind or '').casefold()
-    ridi_type = str(book_type or '').casefold()
+    kind = _metadata_content_kind(content_kind)
+    ridi_type = _metadata_book_type_value(book_type)
     if ridi_type != 'novel' and kind != 'novel':
         return [primary] if primary else []
     encoded = quote_plus(str(query or '').strip())
@@ -1894,28 +1931,34 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         query = _metadata_search_query(query, config)
         if len(query) < 2:
             return []
-        content_kind = content_kind or ('novel' if db_type == 'adult' else 'manga')
-        book_type = str(book_type or '').strip().casefold()
+        content_kind = _metadata_content_kind(
+            content_kind or ('novel' if db_type == 'adult' else 'manga'))
+        book_type = _metadata_book_type_value(book_type)
         # Candidate filtering and media-type labels are part of the result
         # shape; invalidate older cached cards that may contain description
         # rows from the unfiltered Ridi response.
-        # v8 intentionally invalidates the older cache, which could contain an
+        # v10 intentionally invalidates the older cache, which could contain an
         # empty response from a transient NAS/proxy failure.  Empty searches
         # are not cached so a later scan can retry the provider immediately.
         # Manual and automatic searches have different title matching rules,
         # so they must never share a cache entry.
-        cache_key = 'metadata-search:v9:' + hashlib.sha256(
+        cache_key = 'metadata-search:v10:' + hashlib.sha256(
             json.dumps([
                 query, content_kind, book_type,
                 _metadata_source_order(config), bool(manual),
             ], ensure_ascii=False).encode()
         ).hexdigest()
-        try:
-            cached = self.cache_get(cache_key)
-            if cached:
-                return json.loads(cached)
-        except (TypeError, ValueError):
-            pass
+        # Manual searches must query every selected provider on every submit.
+        # Caching a successful Naver response while Ridi is temporarily
+        # unreachable makes the missing Ridi card look permanent for the next
+        # five minutes, even after the provider is reachable again.
+        if not manual:
+            try:
+                cached = self.cache_get(cache_key)
+                if cached:
+                    return json.loads(cached)
+            except (TypeError, ValueError):
+                pass
         results = []
         seen = set()
         seen_work_keys = set()
@@ -1948,7 +1991,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                     break
             if len(results) >= 24:
                 break
-        if results:
+        if results and not manual:
             try:
                 self.cache_set(cache_key, json.dumps(results, ensure_ascii=False), ttl=300)
             except Exception:
@@ -2774,6 +2817,9 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 except (TypeError, ValueError):
                     pass
             search_query = _metadata_search_query(query, config)
+            print(f'[RabbitPlugins-Metadata] 수동 검색 query={search_query!r} '
+                  f'content_kind={content_kind!r} book_type={book_type!r} '
+                  f'sources={",".join(sources)}')
             results = self._search_metadata(
                 search_query, config, db_type, content_kind, book_type,
                 manual=True)
