@@ -12,7 +12,7 @@
   const libraryTypes = { general: '일반도서', adult: '성인도서', audiobook: '오디오북', video: '영상강좌' };
   const relationLabels = {
     main_story: '본편', prequel: '전작', sequel: '후속작', spin_off: '스핀오프',
-    side_story: '외전', alternative: '리메이크', adaptation: '각색', other: '기타',
+    side_story: '외전', alternative: '다른 판본', adaptation: '각색', other: '기타',
   };
   let type = 'general';
   let media = false;
@@ -29,6 +29,7 @@
   let contentKind = '';
   let metadataSources = [];
   let metadataAutoEnabled = false;
+  let metadataHold = {};
   let metadataFields = [];
   let metadataRefreshTimer = null;
   let metadataRefreshAttempts = 0;
@@ -313,6 +314,17 @@
     }
   }
 
+  // The grid remains mounted underneath the detail view. Tell the core that
+  // its cached series rows are stale whenever this view changes metadata or a
+  // cover. The core defers the network request while detail is visible, then
+  // reloads the same loaded page range (and restores its scroll position) as
+  // soon as the user returns to the list.
+  function invalidateSeriesList() {
+    if (typeof window.invalidateBookListAfterScan === 'function') {
+      window.invalidateBookListAfterScan();
+    }
+  }
+
   const siteNames = Object.freeze({
     'ridibooks.com': '리디북스',
     'ridi.com': '리디',
@@ -511,6 +523,11 @@
     }
   }
 
+  function hasStoredSummary(value) {
+    const text = String(value || '').trim();
+    return Boolean(text && text !== '-' && text !== '등록된 설명이 없습니다.');
+  }
+
   function renderAppearance() {
     const coverSrc = safeUrl(meta.cover_image || books[0]?.cover_image, true);
     const bannerSrc = safeUrl(meta.banner_image, true);
@@ -656,6 +673,7 @@
     await loadDetailData(false);
     coverRevision += 1;
     renderMetadataRefresh();
+    invalidateSeriesList();
     // 표지·설명처럼 추천 기준과 무관한 필드가 바뀔 때는 추천 API를
     // 다시 호출하지 않습니다. 작가·장르·태그·제목이 실제로 바뀐 경우에만
     // 새 후보를 조회하고, 기존 카드는 조회가 끝날 때까지 유지합니다.
@@ -1437,6 +1455,7 @@
       if (detail.meta) Object.assign(meta, detail.meta);
       coverRevision += 1;
       await loadDetailData();
+      invalidateSeriesList();
       closeMetadataSearch();
       notify(result.message || '메타데이터를 적용했습니다.');
     } catch (error) {
@@ -1517,6 +1536,7 @@
     const displayTitle = String(meta.series_alias || meta.series_name || context.seriesName || '도서 상세')
       .replace(/(?:\s*\[[^\]]*\])+\s*$/u, '').trim() || '도서 상세';
     $('[data-title]').textContent = displayTitle;
+    renderMetadataHold();
     const originalTitle = String(meta.localized_series || '').trim();
     const originalTitleNode = $('[data-original-title]');
     originalTitleNode.hidden = !originalTitle || originalTitle.toLocaleLowerCase() === String(displayTitle).trim().toLocaleLowerCase();
@@ -1602,6 +1622,22 @@
     renderSeries();
     renderAppearance();
     requestAnimationFrame(fitSummary);
+  }
+
+  function renderMetadataHold() {
+    const panel = $('[data-metadata-hold]');
+    const candidates = Array.isArray(metadataHold?.candidates) ? metadataHold.candidates : [];
+    const sourceLabels = { ridi: '리디', naver: '네이버시리즈', kyobo: '교보문고',
+      kakaopage: '카카오페이지', kakao_webtoon: '카카오웹툰',
+      munpia: '문피아', novelpia: '노벨피아' };
+    panel.hidden = !canEdit || metadataHold?.reason !== 'author_conflict';
+    const list = $('[data-metadata-hold-candidates]');
+    list.replaceChildren(...candidates.map((candidate) => {
+      const source = sourceLabels[candidate?.source] || String(candidate?.source || '제공처');
+      const title = String(candidate?.title || '').trim();
+      const author = String(candidate?.author || '작가 미상').trim();
+      return node('li', '', `${source} · ${title} · ${author}`);
+    }));
   }
 
   function editMode(on) {
@@ -1777,6 +1813,7 @@
       }
       if (!detailFieldsError && coverArtistSaved && meta.cover_artist && meta.cover_artist !== '-') meta.artist = meta.cover_artist;
       coverRevision += 1;
+      invalidateSeriesList();
       saving = false;
       editMode(false);
       renderHeader();
@@ -1806,6 +1843,7 @@
       contentKind = data.content_kind || contentKind;
       metadataSources = Array.isArray(data.metadata_sources) ? data.metadata_sources : metadataSources;
       metadataAutoEnabled = data.metadata_auto_enabled === true;
+      metadataHold = data.metadata_hold || {};
       metadataFields = Array.isArray(data.metadata_fields) ? data.metadata_fields : metadataFields;
       canDownload = data.can_download !== false;
       const currentBooks = new Map(books.map((book) => [Number(book.id), book]));
@@ -1823,15 +1861,27 @@
         if (file.number != null) book.number = file.number;
       }
       if (contentKind === 'book') meta.release_date = (data.files || []).find((file) => file.release_date)?.release_date || '';
-      const combinedGenres = [meta.genre, ...(data.files || []).map((file) => file.genre)].flatMap(split);
-      const combinedTags = [meta.tags, ...(data.files || []).map((file) => file.tags)].flatMap(split);
+      // The core detail response is the authoritative post-scan database
+      // state. kavita.yaml and ComicInfo.xml have already been imported into
+      // those rows by the scanner, so combining every file again can briefly
+      // resurrect values that an explicit metadata overwrite replaced.
+      // File rows are therefore only a fallback when the series value is
+      // genuinely empty.
+      const storedGenres = split(meta.genre);
+      const storedTags = split(meta.tags);
+      const combinedGenres = (storedGenres.length
+        ? storedGenres
+        : (data.files || []).flatMap((file) => split(file.genre)));
+      const combinedTags = (storedTags.length
+        ? storedTags
+        : (data.files || []).flatMap((file) => split(file.tags)));
       const cleanTerms = distinctGenreTags(combinedGenres.join(', '), combinedTags.join(', '));
       meta.genre = cleanTerms.genre;
       meta.tags = cleanTerms.tags;
       applyContentRating(data.files || []);
       const comicinfo = data.comicinfo || {};
-      meta.localized_series = data.localized_series || comicinfo.localized_series || meta.localized_series || '';
-      if (summaryHtmlEnabled && String(comicinfo.summary || '').trim()) {
+      meta.localized_series = meta.localized_series || data.localized_series || comicinfo.localized_series || '';
+      if (summaryHtmlEnabled && !hasStoredSummary(meta.summary) && String(comicinfo.summary || '').trim()) {
         meta.summary = comicinfo.summary;
       }
       meta.artist = meta.cover_artist && meta.cover_artist !== '-'
@@ -1843,7 +1893,10 @@
       meta.comicinfo_number = comicinfo.number;
       meta.publication_final_volume_found = comicinfo.final_volume_found === true;
       meta.publication_available_volume_count = Number(comicinfo.available_volume_count) || 0;
-      meta.publication_status_label = comicinfo.publication_status_label || meta.publication_status_label || '';
+      const storedPublicationStatus = String(meta.publication_status ?? '').trim();
+      meta.publication_status_label = ['0', '1', '2'].includes(storedPublicationStatus)
+        ? (meta.publication_status_label || '')
+        : (comicinfo.publication_status_label || meta.publication_status_label || '');
       meta.publication_dates = data.publication_dates || {};
       meta.publication_coverage = data.publication_coverage || {};
       meta.manual_chapter_count = data.manual_chapter_count || '';

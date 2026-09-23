@@ -366,6 +366,11 @@
 .ds-library-link:hover { color: var(--ds-accent); text-decoration: underline; }
 .ds-heading h1 { max-width: 100%; font-size: clamp(25px, 3vw, 36px); font-weight: 750; line-height: 1.2; letter-spacing: -.035em; overflow-wrap: anywhere; }
 .ds-original-title { margin-top: 4px; color: var(--app-text-secondary, var(--ds-muted)); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.ds-metadata-hold { margin-top: 16px; padding: 14px 16px; border: 1px solid color-mix(in srgb, #e5aa54 45%, var(--ds-border)); border-radius: 8px; background: color-mix(in srgb, #e5aa54 8%, var(--ds-panel)); }
+.ds-metadata-hold-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ds-metadata-hold-head strong { font-size: 14px; }
+.ds-metadata-hold-head p { margin-top: 4px; color: var(--ds-muted); font-size: 12px; }
+.ds-metadata-hold ul { margin: 9px 0 0; padding-left: 18px; color: var(--ds-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .ds-description { max-width: 1000px; margin-top: 20px; }
 .ds-summary { color: color-mix(in srgb, var(--app-text-secondary, var(--ds-text)) 78%, var(--ds-text) 22%); font-size: 14px; line-height: 1.85; white-space: pre-line; overflow-wrap: anywhere; }
 .ds-summary-image { display: block; width: auto; max-width: 100%; height: auto; margin: 12px 0; border-radius: 4px; }
@@ -584,6 +589,7 @@
       "library-path library-path"
       "title mobile-info"
       "original age"
+      "hold hold"
       "cover cover"
       "genres genres"
       "author author"
@@ -726,6 +732,9 @@
   .ds-library-path { font-size: 9px; }
   .ds-heading h1 { font-size: 20px; line-height: 1.25; }
   .ds-original-title { margin-top: 2px; font-size: 11px; line-height: 1.4; }
+  .ds-metadata-hold { grid-area: hold; margin-top: 0; padding: 11px 12px; }
+  .ds-metadata-hold-head { align-items: flex-start; }
+  .ds-metadata-hold-head .ds-button { flex: 0 0 auto; }
   .ds-description { grid-area: description; align-self: start; margin-top: 0; }
   .ds-description-heading { display: block; }
   .ds-description .ds-section-heading,

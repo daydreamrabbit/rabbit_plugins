@@ -71,6 +71,14 @@
         <button type="button" class="ds-mobile-info-toggle" data-action="mobile-info-toggle" aria-expanded="false" aria-controls="ds-info-panel">정보</button>
       </header>
 
+      <section class="ds-metadata-hold" data-metadata-hold hidden aria-label="자동 메타데이터 수집 보류">
+        <div class="ds-metadata-hold-head">
+          <div><strong>자동 메타데이터 적용 보류</strong><p>동명 작품 후보의 작가가 달라 직접 확인이 필요합니다.</p></div>
+          <button type="button" class="ds-button" data-action="metadata-search-toggle">후보 확인</button>
+        </div>
+        <ul data-metadata-hold-candidates></ul>
+      </section>
+
       <section class="ds-description" aria-label="책 소개">
         <div class="ds-section-heading ds-description-heading">
           <div><h2>작품 소개</h2></div>

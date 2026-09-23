@@ -467,6 +467,8 @@ class ProviderTests(unittest.TestCase):
                 return [dict(id=1, series_name='작품 [작가]', title='작품 1권', library_id=1, file_path='/작품 [작가]/1.txt')]
             def fetch_one(self, *args):
                 return {'content_kind': 'novel'}
+            def get_setting(self, *args):
+                return None
         p.get_db_gateway = lambda *a: Gateway()
         p.get_plugin_config = lambda *a: {'metadata_sources': 'munpia'}
         applied = []
