@@ -46,7 +46,7 @@ class AuthorTests(unittest.TestCase):
             title='작품 속 검객'
             return ([dict(id='novelpia:1',source='novelpia',url='https://novelpia.com/novel/1',title=title,author=author)] if matches(query,title) else []),['42']
         cfg={'metadata_sources':'novelpia','novelpia_author_search_url':'https://search.example/search'}
-        with patch.object(m,'search_additional_provider',side_effect=lambda *a:[]),patch.object(m,'search_novelpia_author',side_effect=fallback) as f:
+        with patch.object(m,'search_additional_provider',side_effect=lambda *a, **kw:[]),patch.object(m,'search_novelpia_author',side_effect=fallback) as f:
             self.assertEqual(len(p._search_metadata('작품 [작가]',cfg,content_kind='novel',manual=True)),1)
             self.assertEqual(p._search_metadata('작품 [작가]',cfg,content_kind='novel'),[])
             self.assertEqual(f.call_args.kwargs['known_ids'],['42'])

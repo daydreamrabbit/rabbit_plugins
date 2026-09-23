@@ -15,10 +15,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 DEFAULT_USER_AGENT = "Mozilla/5.0 Chrome/126 Safari/537.36"
 NOVELPIA_FAILURE_COOLDOWN = 300
-SOURCE_KINDS = {"kakao_webtoon": "manhwa", "kakaopage": "novel",
+SOURCE_KINDS = {"naver_webtoon": "manhwa", "kakaopage": ("novel", "manhwa"), "kakao_webtoon": "manhwa",
                 "munpia": "novel", "novelpia": "novel"}
 NOVEL_GENRES = {"웹소설", "판타지", "무협", "현대", "로맨스", "현대판타지", "라이트노벨", "공포", "SF", "스포츠", "대체역사", "기타"}
-SOURCE_LABELS = {"kakao_webtoon": "카카오웹툰", "kakaopage": "카카오페이지",
+SOURCE_LABELS = {"naver_webtoon": "네이버웹툰", "kakao_webtoon": "카카오웹툰", "kakaopage": "카카오페이지",
                  "munpia": "문피아", "novelpia": "노벨피아"}
 
 
@@ -74,6 +74,127 @@ class SearchAdapter:
                     publisher=self._clean_text(publisher), cover=cover or "",
                     summary=self._clean_text(description), url=link, link=link,
                     genre=self._clean_text(genre), tags=self._clean_text(tags), isbn=isbn, **extra)
+
+    def _search_naver_webtoon(self, query, cfg):
+        url = "https://comic.naver.com/api/search/all?" + urllib.parse.urlencode({"keyword": query})
+        data = self._get_json(url, cfg, headers=self._naver_webtoon_headers("https://comic.naver.com/"))
+        groups = ("searchWebtoonResult", "searchBestChallengeResult", "searchChallengeResult")
+        candidates = []
+        seen_ids = set()
+        max_results = self._int(cfg.get("MAX_RESULTS"), 20, 1, 100)
+        for group in groups:
+            value = data.get(group) or {}
+            rows = value.get("searchViewList") or [] if isinstance(value, dict) else value
+            for item in rows if isinstance(rows, list) else []:
+                title_id = item.get("titleId")
+                title = self._clean_text(item.get("titleName") or item.get("title"))
+                if not title_id or not title or not self._matches_candidate_title(query, title, cfg):
+                    continue
+                if (item.get("adult") or item.get("nineteen")) and not self._truthy(cfg.get("INCLUDE_ADULT")):
+                    continue
+                if str(title_id) in seen_ids:
+                    continue
+                seen_ids.add(str(title_id))
+                candidates.append((item, title_id))
+                if len(candidates) >= max_results:
+                    break
+            if len(candidates) >= max_results:
+                break
+
+        details = self._parallel_map(
+            lambda candidate: self._naver_webtoon_detail(candidate[1], cfg),
+            candidates,
+        )
+        results = []
+        for (item, title_id), detail in zip(candidates, details):
+            merged = dict(item)
+            merged.update(detail)
+            rest = bool(merged.get("rest"))
+            finished = bool(merged.get("finished"))
+            status = "1" if rest else "2" if finished else "0"
+            curation = merged.get("curationTagList") or merged.get("tagList") or []
+            genre_values = [
+                tag for tag in curation
+                if isinstance(tag, dict) and str(tag.get("curationType") or "").startswith("GENRE_")
+            ]
+            tag_values = [
+                tag for tag in curation
+                if not isinstance(tag, dict) or not str(tag.get("curationType") or "").startswith("GENRE_")
+            ]
+            if not genre_values:
+                genre_values = merged.get("genreList") or []
+            age = merged.get("age") if isinstance(merged.get("age"), dict) else {}
+            age_type = str(age.get("type") or "").upper()
+            books_lv = {
+                "RATE_ALL": "everyone", "RATE_12": "ma15+", "RATE_15": "ma15+",
+                "RATE_18": "adult only", "RATE_19": "adult only",
+            }.get(age_type, "")
+            first_date = self._naver_webtoon_date(merged.get("_first_service_date"))
+            last_date = self._naver_webtoon_date(merged.get("lastArticleServiceDate"))
+            total = self._int(
+                merged.get("_article_total") or merged.get("articleTotalCount"), 0, 0, 1000000)
+            results.append(self._item(
+                source="네이버웹툰",
+                title=merged.get("titleName") or "",
+                author=self._join_names(merged.get("communityArtists")) or merged.get("displayAuthor") or "",
+                publisher="네이버웹툰",
+                cover=merged.get("thumbnailUrl") or merged.get("posterThumbnailUrl") or "",
+                description=merged.get("synopsis") or "",
+                link=f"https://comic.naver.com/webtoon/list?titleId={title_id}",
+                genre=self._join_names(genre_values),
+                tags=self._join_names(tag_values),
+                pub_date=first_date,
+                score="",
+                release_date=first_date,
+                publication_start_date=first_date,
+                publication_end_date=last_date if finished else "",
+                publication_status=status,
+                total_chapters=total if finished else 0,
+                books_lv=books_lv,
+            ))
+        return results
+
+    def _naver_webtoon_detail(self, title_id, cfg):
+        headers = self._naver_webtoon_headers(
+            f"https://comic.naver.com/webtoon/list?titleId={title_id}")
+        detail = {}
+        try:
+            detail = self._get_json(
+                "https://comic.naver.com/api/article/list/info?" +
+                urllib.parse.urlencode({"titleId": title_id}), cfg, headers=headers)
+        except Exception:
+            pass
+        try:
+            chronology = self._get_json(
+                "https://comic.naver.com/api/article/list?" +
+                urllib.parse.urlencode({"titleId": title_id, "page": 1, "sort": "ASC"}),
+                cfg, headers=headers)
+            articles = chronology.get("articleList") or []
+            if articles:
+                detail["_first_service_date"] = articles[0].get("serviceDateDescription") or ""
+            detail["_article_total"] = chronology.get("totalCount") or 0
+        except Exception:
+            pass
+        return detail
+
+    @staticmethod
+    def _naver_webtoon_headers(referer):
+        return {
+            "Accept": "application/json, text/plain, */*",
+            "Referer": referer,
+        }
+
+    @staticmethod
+    def _naver_webtoon_date(value):
+        text = str(value or "").strip()
+        match = re.fullmatch(r"(\d{2}|\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})", text)
+        if not match:
+            return ""
+        year = int(match.group(1))
+        if year < 100:
+            current = time.localtime().tm_year % 100
+            year += 2000 if year <= current else 1900
+        return f"{year:04d}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
 
     def _search_kakao_webtoon(self, query, cfg):
         params = urllib.parse.urlencode({"word": query, "offset": 0, "limit": self._int(cfg.get("MAX_RESULTS"), 20, 1, 100)})
@@ -499,9 +620,13 @@ class SearchAdapter:
             value = default
         return max(min_value, min(max_value, value))
 
-def search(source, query, matches, limit=8):
+def search(source, query, matches, limit=8, content_kind=""):
     adapter = SearchAdapter(matches)
-    cfg = {"MAX_RESULTS": max(30, limit), "NOVELPIA_TIMEOUT": 8, "KAKAOPAGE_CATEGORY": "novel", "INCLUDE_ADULT": True}
+    cfg = {
+        "MAX_RESULTS": max(30, limit), "NOVELPIA_TIMEOUT": 8,
+        "KAKAOPAGE_CATEGORY": "webtoon" if content_kind == "manhwa" else "novel",
+        "INCLUDE_ADULT": True,
+    }
     rows = getattr(adapter, "_search_" + source)(query, cfg)
     result = []
     seen = set()
@@ -514,7 +639,10 @@ def search(source, query, matches, limit=8):
         seen.add(url)
         row.update(id=source + ":" + url.rsplit("/", 1)[-1], source=source,
                    source_label=SOURCE_LABELS[source],
-                   variant_label="웹툰" if source == "kakao_webtoon" else "소설")
+                   variant_label="웹툰" if (
+                       source in ("naver_webtoon", "kakao_webtoon")
+                       or source == "kakaopage" and content_kind == "manhwa"
+                   ) else "소설")
         result.append(row)
     return result[:limit]
 

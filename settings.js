@@ -182,19 +182,71 @@
   syncKindAvailability();
   if (sourceList && sourceInput && fieldInput) {
     const sourceLabels = {
-      series_db: '데이터베이스', ridi: '리디', naver: '네이버', kyobo: '교보문고', kakao_webtoon: '카카오웹툰', kakaopage: '카카오페이지', munpia: '문피아', novelpia: '노벨피아',
+      series_db: '데이터베이스', ridi: '리디', naver: '네이버시리즈', naver_webtoon: '네이버웹툰', kyobo: '교보문고', kakaopage: '카카오페이지', kakao_webtoon: '카카오웹툰', munpia: '문피아', novelpia: '노벨피아',
     };
     const sourceKeys = Object.keys(sourceLabels);
+    const sourceGroups = [
+      { id: 'naver', sources: ['naver', 'naver_webtoon'] },
+      { id: 'kakao', sources: ['kakaopage', 'kakao_webtoon'] },
+    ];
+    const sourceGroupFor = key => sourceGroups.find(group => group.sources.includes(key));
     const readList = (value, fallback) => {
       const values = String(value || '').split(/[,;|]/).map(item => item.trim().toLowerCase())
         .filter(item => fallback.includes(item));
       return [...new Set(values.concat(fallback))];
     };
+    const normalizeSourceGroups = values => {
+      let normalized = values.slice();
+      sourceGroups.forEach(group => {
+        const members = group.sources.filter(key => normalized.includes(key));
+        if (!members.length) return;
+        const index = Math.min(...members.map(key => normalized.indexOf(key)));
+        normalized = normalized.filter(key => !group.sources.includes(key));
+        normalized.splice(index, 0, ...members);
+      });
+      return normalized;
+    };
+    const moveSource = (movedKey, targetKey) => {
+      if (!sources.includes(movedKey) || !sources.includes(targetKey)) return false;
+      if (!movedKey || movedKey === targetKey) return false;
+      const movedGroup = sourceGroupFor(movedKey);
+      const targetGroup = sourceGroupFor(targetKey);
+      if (movedGroup && movedGroup === targetGroup) return false;
+      const movedBlock = movedGroup
+        ? movedGroup.sources.filter(key => sources.includes(key)) : [movedKey];
+      const targetBlock = targetGroup
+        ? targetGroup.sources.filter(key => sources.includes(key)) : [targetKey];
+      const movedAt = Math.min(...movedBlock.map(key => sources.indexOf(key)));
+      const targetAt = Math.min(...targetBlock.map(key => sources.indexOf(key)));
+      const movingDown = movedAt < targetAt;
+      const remaining = sources.filter(key => !movedBlock.includes(key));
+      const targetIndexes = targetBlock
+        .map(key => remaining.indexOf(key)).filter(index => index >= 0);
+      if (!targetIndexes.length) return false;
+      const insertAt = Math.min(...targetIndexes) + (movingDown ? targetBlock.length : 0);
+      remaining.splice(insertAt, 0, ...movedBlock);
+      sources = remaining;
+      sources = normalizeSourceGroups(sources);
+      return true;
+    };
+    const sourceUnits = () => {
+      const renderedGroups = new Set();
+      return sources.reduce((units, key) => {
+        const group = sourceGroupFor(key);
+        if (!group) {
+          units.push({ id: key, sources: [key] });
+        } else if (!renderedGroups.has(group.id)) {
+          renderedGroups.add(group.id);
+          units.push({ id: group.id, sources: group.sources.filter(source => sources.includes(source)) });
+        }
+        return units;
+      }, []);
+    };
     const configuredSources = String(savedConfig.metadata_sources || '').split(/[,;|]/)
       .map(item => item.trim().toLowerCase()).filter(item => sourceKeys.includes(item));
     const selectedSources = new Set(Object.prototype.hasOwnProperty.call(savedConfig, 'metadata_sources')
       ? configuredSources : sourceKeys);
-    let sources = readList(configuredSources.join(','), sourceKeys);
+    let sources = normalizeSourceGroups(readList(configuredSources.join(','), sourceKeys));
     if (!sources.length) sources = sourceKeys.slice();
     const configuredFields = String(savedConfig.metadata_fields || '').split(/[,;|]/)
       .map(item => item.trim()).filter(Boolean);
@@ -207,43 +259,61 @@
         const input = row.querySelector('[data-source]');
         row.classList.toggle('is-selected', !!input?.checked);
       });
+      sourceList.querySelectorAll('.rabbit-metadata-source-group').forEach(group => {
+        group.classList.toggle('is-selected', [...group.querySelectorAll('[data-source]')]
+          .some(input => input.checked));
+      });
       root.querySelectorAll('[data-metadata-field]').forEach(input => syncChoiceState(input));
+    };
+    const createSourceRow = key => {
+      const row = document.createElement('div');
+      row.className = 'rabbit-metadata-source-row';
+      row.dataset.sourceEntry = key;
+      const label = document.createElement('label');
+      label.innerHTML = `<input type="checkbox" data-source="${key}"><span>${sourceLabels[key]}</span>`;
+      label.querySelector('input').checked = selectedSources.has(key);
+      label.querySelector('input').addEventListener('change', event => {
+        if (event.target.checked) selectedSources.add(key);
+        else selectedSources.delete(key);
+        sync();
+      });
+      row.append(label);
+      return row;
     };
     const render = () => {
       sourceList.replaceChildren();
-      sources.forEach((key, index) => {
-        const row = document.createElement('div');
-        row.className = 'rabbit-metadata-source-row';
-        row.draggable = true;
-        row.dataset.source = key;
-        row.innerHTML = `<span class="rabbit-metadata-source-grip" aria-hidden="true">⠿</span>`;
-        const label = document.createElement('label');
-        label.innerHTML = `<input type="checkbox" data-source="${key}"><span>${sourceLabels[key]}</span>`;
-        label.querySelector('input').checked = selectedSources.has(key);
-        label.querySelector('input').addEventListener('change', event => {
-          if (event.target.checked) selectedSources.add(key);
-          else selectedSources.delete(key);
-          sync();
-        });
-        row.append(label);
-        row.addEventListener('dragstart', event => {
-          row.classList.add('is-dragging');
-          event.dataTransfer.setData('text/plain', String(index));
+      sourceUnits().forEach(unit => {
+        const grouped = unit.sources.length > 1;
+        const block = grouped ? document.createElement('div') : createSourceRow(unit.sources[0]);
+        if (grouped) {
+          block.className = `rabbit-metadata-source-group is-${unit.id}-source-group`;
+          const items = document.createElement('div');
+          items.className = 'rabbit-metadata-source-group-items';
+          unit.sources.forEach(key => items.append(createSourceRow(key)));
+          block.append(items);
+        }
+        block.dataset.source = unit.sources[0];
+        block.dataset.sources = unit.sources.join(',');
+        const grip = document.createElement('span');
+        grip.className = 'rabbit-metadata-source-grip';
+        grip.textContent = '⠿';
+        grip.draggable = true;
+        grip.addEventListener('dragstart', event => {
+          block.classList.add('is-dragging');
+          event.dataTransfer.setData('text/plain', unit.sources[0]);
           event.dataTransfer.effectAllowed = 'move';
         });
-        row.addEventListener('dragend', () => row.classList.remove('is-dragging'));
-        row.addEventListener('dragover', event => event.preventDefault());
-        row.addEventListener('drop', event => {
+        grip.addEventListener('dragend', () => block.classList.remove('is-dragging'));
+        block.insertBefore(grip, block.children[0] || null);
+        block.addEventListener('dragover', event => event.preventDefault());
+        block.addEventListener('drop', event => {
           event.preventDefault();
-          const from = Number(event.dataTransfer.getData('text/plain'));
-          const to = sources.indexOf(key);
-          if (!Number.isInteger(from) || from < 0 || from >= sources.length || from === to) return;
-          const [moved] = sources.splice(from, 1);
-          sources.splice(to, 0, moved);
+          const movedKey = event.dataTransfer.getData('text/plain');
+          if (!moveSource(movedKey, unit.sources[0])) return;
           render();
           sync();
         });
-        sourceList.append(row);
+        sourceList.append(block);
       });
       sync();
     };

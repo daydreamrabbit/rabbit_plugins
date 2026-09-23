@@ -1290,12 +1290,13 @@
   function renderMetadataSources() {
     const target = $('[data-metadata-source-options]');
     if (!target) return;
-    const labels = { series_db: '데이터베이스', ridi: '리디', naver: '네이버', kyobo: '교보문고', kakao_webtoon: '카카오웹툰', kakaopage: '카카오페이지', munpia: '문피아', novelpia: '노벨피아' };
+    const labels = { series_db: '데이터베이스', ridi: '리디', naver: '네이버시리즈', naver_webtoon: '네이버웹툰', kyobo: '교보문고', kakao_webtoon: '카카오웹툰', kakaopage: '카카오페이지', munpia: '문피아', novelpia: '노벨피아' };
     const selected = metadataSources;
     target.replaceChildren(...Object.entries(labels).filter(([key]) => {
       const kind = ({'소설':'novel','라노벨':'novel','라이트노벨':'novel','웹툰':'manhwa'})[contentKind] || contentKind;
-      return key === 'kakao_webtoon' ? kind === 'manhwa'
-        : ['kakaopage','munpia','novelpia'].includes(key) ? kind === 'novel' : true;
+      return ['naver_webtoon','kakao_webtoon'].includes(key) ? kind === 'manhwa'
+        : key === 'kakaopage' ? ['novel', 'manhwa'].includes(kind)
+        : ['munpia','novelpia'].includes(key) ? kind === 'novel' : true;
     }).map(([key, label]) => {
       const field = node('label', 'ds-metadata-source-option');
       const input = document.createElement('input');

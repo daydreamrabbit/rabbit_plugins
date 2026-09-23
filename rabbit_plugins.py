@@ -59,7 +59,7 @@ from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '3.0.1'
+PLUGIN_VERSION = '3.0.2'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -80,7 +80,7 @@ RELATION_FIELDS = {
 
 METADATA_SOURCES = ('series_db', 'ridi', 'naver', 'kyobo', *SOURCE_KINDS)
 METADATA_SOURCE_LABELS = {
-    'series_db': '데이터베이스', 'ridi': '리디', 'naver': '네이버', 'kyobo': '교보문고',
+    'series_db': '데이터베이스', 'ridi': '리디', 'naver': '네이버시리즈', 'kyobo': '교보문고',
     **SOURCE_LABELS,
 }
 METADATA_FIELDS = (
@@ -121,7 +121,24 @@ def _config_list(value, allowed):
 
 def _metadata_source_order(config):
     configured = _config_list(config.get('metadata_sources'), METADATA_SOURCES)
-    return configured if 'metadata_sources' in config else list(METADATA_SOURCES)
+    values = configured if 'metadata_sources' in config else list(METADATA_SOURCES)
+    # Each catalogue/webtoon pair moves as one priority block. Activation is
+    # still independent, so a block can contain only its enabled member.
+    for group in (('naver', 'naver_webtoon'), ('kakaopage', 'kakao_webtoon')):
+        enabled = [source for source in group if source in values]
+        if not enabled:
+            continue
+        insert_at = min(values.index(source) for source in enabled)
+        values = [source for source in values if source not in set(group)]
+        values[insert_at:insert_at] = enabled
+    return values
+
+
+def _metadata_source_supports_kind(source, content_kind):
+    kinds = SOURCE_KINDS.get(source)
+    if not kinds:
+        return True
+    return content_kind in kinds if isinstance(kinds, (tuple, list, set)) else kinds == content_kind
 
 
 def _metadata_content_kind(value):
@@ -886,6 +903,36 @@ def _metadata_title_matches(query, candidate_title, allow_partial=False):
         query_key in candidate_key or candidate_key in query_key))
 
 
+def _metadata_candidate_variant_label(candidate, content_kind, book_type=''):
+    """Normalize a result label against the target library media kind.
+
+    Provider category text such as ``BL 소설 e북`` contains the generic word
+    ``e북``. It must never be interpreted as ``만화 e북`` when the target is a
+    novel library. Apply this after every provider adapter so the correction is
+    source-independent.
+    """
+    kind = _metadata_content_kind(content_kind)
+    current = str(candidate.get('variant_label') or candidate.get('media_type_label') or '').strip()
+    metadata = candidate.get('metadata') if isinstance(candidate.get('metadata'), dict) else {}
+    evidence = ' '.join(str(value or '') for value in (
+        current, candidate.get('title'), candidate.get('genre'),
+        metadata.get('genre'), metadata.get('tags'),
+    ))
+    if kind != 'novel':
+        return current
+
+    is_bl = bool(re.search(r'(?<![a-z])bl(?![a-z])', evidence, re.I))
+    if re.search(r'라이트\s*노벨|라노벨', evidence, re.I):
+        return 'BL 라이트노벨' if is_bl else '라이트노벨'
+    is_ebook = bool(re.search(r'소설\s*e북|전자책|단행본|총\s*\d+\s*권', evidence, re.I))
+    is_serial = bool(re.search(r'웹소설|연재|총\s*\d+\s*화', evidence, re.I))
+    if is_ebook:
+        return 'BL 소설 e북' if is_bl else '소설 e북'
+    if is_serial:
+        return 'BL 웹소설' if is_bl else '웹소설'
+    return 'BL 소설' if is_bl else '소설'
+
+
 def _metadata_source_variant_score(candidate, content_kind, book_type):
     """Prefer the configured media type when a source has exact duplicates."""
     source = str(candidate.get('source') or '').casefold()
@@ -924,11 +971,14 @@ def _metadata_source_variant_allowed(candidate, content_kind, book_type):
     if source != 'naver':
         return True
     title = str(candidate.get('title') or '').casefold()
+    if re.search(r'(?:세트|합본)', title):
+        return False
     has_chapter_marker = bool(re.search(r'(?:총\s*\d+\s*화|웹툰|연재)', title))
-    if book_type == 'single' and has_chapter_marker:
-        return False
-    if book_type == 'series' and '단행본' in title:
-        return False
+    has_volume_marker = bool(re.search(r'(?:총\s*\d+\s*권|단행본)', title))
+    if book_type == 'single':
+        return has_volume_marker and not has_chapter_marker
+    if book_type in {'series', 'webtoon'}:
+        return has_chapter_marker and not has_volume_marker
     return True
 
 
@@ -1660,18 +1710,32 @@ def _naver_search_cover(source, href):
 def _naver_variant_label(content_kind, title='', href=''):
     """Describe the Naver result's catalogue type beside its source."""
     kind = str(content_kind or '').strip().casefold()
+    text = f'{title} {href}'
+    if re.search(r'\[\s*단행본\s*\]|단행본', text, re.I):
+        return '만화 e북'
+    if re.search(r'총\s*\d+\s*화|연재|comic/detail', text, re.I):
+        return '만화 연재'
     if kind == 'novel':
         return '라이트노벨'
     if kind == 'book':
         return '도서'
     if kind == 'manhwa':
         return '웹툰'
-    text = f'{title} {href}'
-    if re.search(r'\[\s*단행본\s*\]|단행본', text, re.I):
-        return '만화 e북'
-    if re.search(r'총\s*\d+\s*화|연재|comic/detail', text, re.I):
-        return '만화 연재'
     return '만화 e북'
+
+
+def _naver_catalogue_metadata(title):
+    """Read completion and a final count from a Naver Series result title."""
+    text = _html_text(title)
+    result = {}
+    if '미완결' in text:
+        result['publication_status'] = '0'
+    elif '완결' in text:
+        result['publication_status'] = '2'
+    count = re.search(r'총\s*(\d+)\s*(?:화|권)', text)
+    if count and result.get('publication_status') == '2':
+        result['total_chapters'] = int(count.group(1))
+    return result
 
 
 def _source_result_filter(source, href):
@@ -1717,7 +1781,13 @@ def _metadata_book_type(content_kind, title='', file_path=''):
     title_text = str(title or '').strip()
     file_name = os.path.basename(str(file_path or '').replace('\\', '/')).strip()
     text = f'{title_text} {file_name}'.strip()
+    episode_file = bool(re.search(r'(?<!\d)\d+(?:[.,]\d+)?\s*화(?:\D|$)', text, re.I))
+    volume_file = bool(re.search(r'(?<!\d)\d+(?:[.,]\d+)?\s*권(?:\D|$)', text, re.I))
     if kind == 'manhwa' or re.search(r'(?:^|[\s(\[【])웹툰(?:$|[\s)\]】])', text, re.I):
+        if episode_file or '연재' in text:
+            return 'series'
+        if volume_file or '단행본' in text:
+            return 'single'
         return 'webtoon'
     if kind == 'novel':
         return 'novel'
@@ -1725,7 +1795,7 @@ def _metadata_book_type(content_kind, title='', file_path=''):
         # Ridi distinguishes 만화 e북 and 만화 연재.  The scanner's title may
         # not retain the filename marker, so keep the filename in the decision
         # and treat any explicit ``연재`` marker as the serialized search.
-        return 'series' if '연재' in text else 'single'
+        return 'series' if episode_file or '연재' in text else 'single'
     if kind == 'book':
         return 'book'
     return ''
@@ -1863,7 +1933,7 @@ def _remote_source_url(source, query, content_kind, book_type='',
         suffix = f'&child_tab={child_tab}' if child_tab else ''
         return f'https://ridibooks.com/search?q={encoded}&tab={tab}&page=1{suffix}'
     if source == 'naver':
-        query_type = {'novel': 'novel', 'book': 'ebook', 'manhwa': 'webtoon'}.get(str(content_kind or '').casefold(), 'comic')
+        query_type = {'novel': 'novel', 'book': 'ebook', 'manhwa': 'comic'}.get(str(content_kind or '').casefold(), 'comic')
         return f'https://series.naver.com/search/search.series?t={query_type}&q={encoded}'
     if source == 'kyobo':
         return f'https://search.kyobobook.co.kr/search?keyword={encoded}&gbCode=EBK&target=all'
@@ -1997,13 +2067,17 @@ def _remote_search_page(source, query, content_kind, book_type='', limit=8,
         if source == 'naver':
             cover = _naver_search_cover(response.text, href) or cover
             variant_label = _naver_variant_label(content_kind, title, href)
-        result.append({
+        candidate = {
             'id': f'{source}:{hashlib.sha1(href.encode()).hexdigest()[:12]}',
             'title': title[:500], 'url': href, 'link': href,
             'source': source, 'source_label': METADATA_SOURCE_LABELS[source],
             'variant_label': variant_label,
+            'publisher': '네이버시리즈' if source == 'naver' else '',
             'cover': cover,
-        })
+        }
+        if not _metadata_source_variant_allowed(candidate, content_kind, book_type):
+            continue
+        result.append(candidate)
         if len(result) >= limit:
             break
     return result
@@ -2125,6 +2199,9 @@ def _remote_fetch_metadata(url, source):
             metadata.update(_ridi_publication_metadata(response.text))
         elif source == 'naver':
             metadata.update(_naver_role_metadata(response.text))
+            # The Naver catalogue provider is Naver Series. Keep this stable
+            # even when a detail page exposes a separate content imprint.
+            metadata['publisher'] = '네이버시리즈'
         elif source == 'kyobo':
             metadata.update(_kyobo_detail_metadata(response.text))
         keyword_text = parser.meta.get('keywords', '') or detail_data.get('tags', '')
@@ -2185,7 +2262,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         {'key': 'exclude_genres', 'label': '제외할 장르', 'type': 'text', 'default': ''},
         {'key': 'metadata_auto_enabled', 'label': '메타데이터 자동 수집', 'type': 'checkbox', 'default': False},
         {'key': 'novelpia_author_search_url', 'label': '노벨피아 작가 보조 검색 URL (선택)', 'type': 'text', 'default': ''},
-        {'key': 'metadata_sources', 'label': '메타데이터 제공처 우선순위', 'type': 'text', 'default': 'series_db,ridi,naver,kyobo,kakao_webtoon,kakaopage,munpia,novelpia'},
+        {'key': 'metadata_sources', 'label': '메타데이터 제공처 우선순위', 'type': 'text', 'default': 'series_db,ridi,naver,naver_webtoon,kyobo,kakaopage,kakao_webtoon,munpia,novelpia'},
         {'key': 'metadata_fields', 'label': '자동으로 가져올 필드', 'type': 'text', 'default': 'title,localized_series,author,cover_artist,publisher,genre,tags,release_date,isbn,link,cover'},
         {'key': 'metadata_genre_map', 'label': '장르 변환', 'type': 'text', 'default': ''},
         {'key': 'metadata_publisher_map', 'label': '출판사 변환', 'type': 'text', 'default': ''},
@@ -2275,7 +2352,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         # are not cached so a later scan can retry the provider immediately.
         # Manual and automatic searches have different title matching rules,
         # so they must never share a cache entry.
-        cache_key = 'metadata-search:v23:' + hashlib.sha256(
+        cache_key = 'metadata-search:v25:' + hashlib.sha256(
             json.dumps([
                 query, content_kind, book_type,
                 _metadata_source_order(config), bool(manual), ebook_code, author_hint,
@@ -2296,14 +2373,16 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         results = []
         seen = set()
         seen_work_keys = set()
-        for source in _metadata_source_order(config):
-            if source in SOURCE_KINDS and SOURCE_KINDS[source] != content_kind:
+        source_order = _metadata_source_order(config)
+        for source in source_order:
+            if not _metadata_source_supports_kind(source, content_kind):
                 continue
             if source in SOURCE_KINDS:
                 try:
                     candidates = search_additional_provider(
                         source, query,
-                        lambda q, title: _metadata_title_matches(q, title, allow_partial=manual))
+                        lambda q, title: _metadata_title_matches(q, title, allow_partial=manual),
+                        content_kind=content_kind)
                 except Exception as error:
                     print(f'[RabbitPlugins-Metadata] {source} 검색 실패: {type(error).__name__}: {error}')
                     candidates = []
@@ -2373,17 +2452,137 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 if work_key:
                     seen_work_keys.add(work_key)
                 candidate['metadata'] = _metadata_clean(candidate.get('metadata') or candidate)
+                candidate['variant_label'] = _metadata_candidate_variant_label(
+                    candidate, content_kind, book_type)
                 results.append(candidate)
                 if len(results) >= 24:
                     break
             if len(results) >= 24:
                 break
+        if 'naver' in source_order and 'naver_webtoon' in source_order:
+            results = self._combine_naver_candidates(results, book_type)
+        if 'kakaopage' in source_order and 'kakao_webtoon' in source_order:
+            results = self._combine_kakao_candidates(results)
         if results and not manual:
             try:
                 self.cache_set(cache_key, json.dumps(results, ensure_ascii=False), ttl=300)
             except Exception:
                 pass
         return results
+
+    @staticmethod
+    def _combine_naver_candidates(candidates, book_type=''):
+        """Attach Naver Webtoon serialization fields to Naver Series cards.
+
+        Naver Series remains the primary catalogue for title, edition, cover,
+        credits and publisher. Naver Webtoon supplies the reliable hiatus,
+        completion and publication timeline. Episode totals are not copied to
+        a collected-volume candidate because the units are different.
+        """
+        series_rows = [row for row in candidates if row.get('source') == 'naver']
+        webtoon_rows = [row for row in candidates if row.get('source') == 'naver_webtoon']
+        if not series_rows or not webtoon_rows:
+            return candidates
+        replacements = {}
+        consumed_webtoon = set()
+        for primary in series_rows:
+            fallback = next((row for row in webtoon_rows if _metadata_title_matches(
+                primary.get('title'), row.get('title'))), None)
+            if not fallback:
+                continue
+            fetched = _remote_fetch_metadata(primary.get('url'), 'naver') if primary.get('url') else {}
+            primary_values = _metadata_clean({
+                **primary,
+                **fetched,
+                **_naver_catalogue_metadata(primary.get('title')),
+            })
+            fallback_values = _metadata_clean(fallback.get('metadata') or fallback)
+            merged = dict(fallback_values)
+            merged.update({key: value for key, value in primary_values.items() if value})
+            # Naver Webtoon is authoritative for these fields, which Naver
+            # Series either omits or reduces to a generic ongoing value.
+            for field in ('publication_status', 'publication_start_date',
+                          'publication_end_date'):
+                if fallback_values.get(field):
+                    merged[field] = fallback_values[field]
+            if book_type != 'single' and fallback_values.get('total_chapters'):
+                merged['total_chapters'] = fallback_values['total_chapters']
+            elif book_type == 'single' and not primary_values.get('total_chapters'):
+                merged.pop('total_chapters', None)
+            merged['link'] = _join_links(
+                primary.get('url'), primary_values.get('link'), fallback_values.get('link'))
+            combined = dict(primary)
+            combined.update({key: value for key, value in merged.items() if value})
+            combined.update({
+                'source': 'naver',
+                'source_label': '네이버시리즈 + 네이버웹툰',
+                'title': primary.get('title'),
+                'url': primary.get('url'),
+                'metadata': merged,
+                '_metadata_fetched': True,
+                '_combined_sources': ['naver', 'naver_webtoon'],
+            })
+            replacements[id(primary)] = combined
+            consumed_webtoon.add(id(fallback))
+        result = []
+        for candidate in candidates:
+            if id(candidate) in consumed_webtoon:
+                continue
+            result.append(replacements.get(id(candidate), candidate))
+        return result
+
+    @staticmethod
+    def _combine_kakao_candidates(candidates):
+        """Combine matching KakaoPage and Kakao Webtoon results safely.
+
+        KakaoPage remains the primary catalogue. A Kakao Webtoon result fills
+        only missing fields and contributes its link. Same-title works with
+        conflicting known authors remain separate candidates.
+        """
+        page_rows = [row for row in candidates if row.get('source') == 'kakaopage']
+        webtoon_rows = [row for row in candidates if row.get('source') == 'kakao_webtoon']
+        if not page_rows or not webtoon_rows:
+            return candidates
+        replacements = {}
+        consumed_webtoon = set()
+        for primary in page_rows:
+            primary_author = _metadata_candidate_author(primary)
+            fallback = next((row for row in webtoon_rows
+                if id(row) not in consumed_webtoon
+                and _metadata_title_matches(primary.get('title'), row.get('title'))
+                and (
+                    not primary_author
+                    or not _metadata_candidate_author(row)
+                    or _metadata_author_matches(primary_author, _metadata_candidate_author(row))
+                )), None)
+            if not fallback:
+                continue
+            primary_values = _metadata_clean(primary.get('metadata') or primary)
+            fallback_values = _metadata_clean(fallback.get('metadata') or fallback)
+            merged = dict(fallback_values)
+            merged.update({key: value for key, value in primary_values.items() if value})
+            merged['link'] = _join_links(
+                primary.get('url'), primary_values.get('link'),
+                fallback.get('url'), fallback_values.get('link'))
+            combined = dict(primary)
+            combined.update({key: value for key, value in merged.items() if value})
+            combined.update({
+                'source': 'kakaopage',
+                'source_label': '카카오페이지 + 카카오웹툰',
+                'title': primary.get('title'),
+                'url': primary.get('url'),
+                'metadata': merged,
+                '_metadata_fetched': True,
+                '_combined_sources': ['kakaopage', 'kakao_webtoon'],
+            })
+            replacements[id(primary)] = combined
+            consumed_webtoon.add(id(fallback))
+        result = []
+        for candidate in candidates:
+            if id(candidate) in consumed_webtoon:
+                continue
+            result.append(replacements.get(id(candidate), candidate))
+        return result
 
     @staticmethod
     def _select_auto_candidates(candidates, query, content_kind, book_type,

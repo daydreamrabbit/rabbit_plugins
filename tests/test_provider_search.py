@@ -18,7 +18,7 @@ class ProviderTests(unittest.TestCase):
 
     def test_type_gates_and_priority(self):
         calls = []
-        def fake(source, query, matches):
+        def fake(source, query, matches, **kwargs):
             calls.append(source)
             return [self.row(source)]
         p = self.provider()
@@ -32,7 +32,195 @@ class ProviderTests(unittest.TestCase):
         with patch.object(m, 'search_additional_provider', fake):
             p._search_metadata('작품', {'metadata_sources': list(api.SOURCE_KINDS)},
                                content_kind='manhwa', manual=True)
-        self.assertEqual(calls, ['kakao_webtoon'])
+        self.assertEqual(calls, ['naver_webtoon', 'kakaopage', 'kakao_webtoon'])
+
+    def test_naver_sources_are_grouped_with_independent_activation(self):
+        self.assertEqual(
+            m._metadata_source_order({'metadata_sources': ['naver_webtoon', 'ridi', 'naver']}),
+            ['naver', 'naver_webtoon', 'ridi'],
+        )
+        self.assertEqual(
+            m._metadata_source_order({'metadata_sources': ['ridi', 'naver_webtoon']}),
+            ['ridi', 'naver_webtoon'],
+        )
+        self.assertEqual(
+            m._metadata_source_order({'metadata_sources': ['naver']}), ['naver'])
+        self.assertEqual(
+            m._metadata_source_order({'metadata_sources': ['kakao_webtoon', 'ridi', 'kakaopage']}),
+            ['kakaopage', 'kakao_webtoon', 'ridi'],
+        )
+        self.assertEqual(
+            m._metadata_source_order({'metadata_sources': ['ridi', 'kakao_webtoon']}),
+            ['ridi', 'kakao_webtoon'],
+        )
+
+    def test_kakao_page_primary_is_enriched_by_matching_webtoon(self):
+        page = {
+            'id': 'kakaopage:1', 'source': 'kakaopage', 'source_label': '카카오페이지',
+            'title': '같은 작품', 'author': '같은 작가', 'publisher': '출판사',
+            'url': 'https://page.kakao.com/content/1', 'cover': 'page-cover',
+            'publication_status': '0', 'genre': '판타지',
+        }
+        webtoon = {
+            'id': 'kakao_webtoon:2', 'source': 'kakao_webtoon', 'source_label': '카카오웹툰',
+            'title': '같은 작품', 'author': '같은 작가',
+            'url': 'https://webtoon.kakao.com/content/work/2',
+            'summary': '웹툰 소개', 'tags': '성장물', 'cover': 'webtoon-cover',
+        }
+        combined = self.provider()._combine_kakao_candidates([page, webtoon])
+        self.assertEqual(len(combined), 1)
+        row = combined[0]
+        self.assertEqual(row['source_label'], '카카오페이지 + 카카오웹툰')
+        self.assertEqual(row['metadata']['publisher'], '출판사')
+        self.assertEqual(row['metadata']['cover'], 'page-cover')
+        self.assertEqual(row['metadata']['summary'], '웹툰 소개')
+        self.assertIn('page.kakao.com', row['metadata']['link'])
+        self.assertIn('webtoon.kakao.com', row['metadata']['link'])
+
+        mismatch = self.provider()._combine_kakao_candidates([
+            page, {**webtoon, 'author': '다른 작가'}])
+        self.assertEqual(len(mismatch), 2)
+
+    def test_naver_series_variant_follows_filename_unit(self):
+        self.assertEqual(
+            m._metadata_book_type('manhwa', file_path='/books/잔불의 기사 01화.cbz'), 'series')
+        self.assertEqual(
+            m._metadata_book_type('manhwa', file_path='/books/잔불의 기사 01권.cbz'), 'single')
+        self.assertIn(
+            't=comic', m._remote_source_url('naver', '잔불의 기사', 'manhwa', 'series'))
+        serialized = {'source': 'naver', 'title': '잔불의 기사 (총 246화/미완결)'}
+        volume = {'source': 'naver', 'title': '잔불의 기사 [단행본] (총 3권/미완결)'}
+        bundle = {'source': 'naver', 'title': '잔불의 기사 [3권 세트]'}
+        self.assertTrue(m._metadata_source_variant_allowed(serialized, 'manhwa', 'series'))
+        self.assertFalse(m._metadata_source_variant_allowed(volume, 'manhwa', 'series'))
+        self.assertTrue(m._metadata_source_variant_allowed(volume, 'manhwa', 'single'))
+        self.assertFalse(m._metadata_source_variant_allowed(serialized, 'manhwa', 'single'))
+        self.assertFalse(m._metadata_source_variant_allowed(bundle, 'manhwa', 'single'))
+
+    def test_novel_result_labels_never_fall_back_to_comic(self):
+        self.assertEqual(m._metadata_candidate_variant_label({
+            'source': 'ridi', 'variant_label': '만화 e북',
+            'title': '택배 왔습니다', 'genre': '현대물, 판타지물, BL 소설 e북',
+        }, 'novel', 'novel'), 'BL 소설 e북')
+        self.assertEqual(m._metadata_candidate_variant_label({
+            'source': 'naver', 'variant_label': '만화 e북',
+            'title': '택배 왔습니다 [BL][단행본] (총 2권/완결)',
+        }, 'novel', 'novel'), 'BL 소설 e북')
+        self.assertEqual(m._metadata_candidate_variant_label({
+            'source': 'naver', 'variant_label': '만화 연재',
+            'title': '치명적 택배-택배 왔습니다만[BL] (총 45화/완결)',
+        }, 'novel', 'novel'), 'BL 웹소설')
+        self.assertEqual(m._metadata_candidate_variant_label({
+            'source': 'munpia', 'variant_label': '만화 e북',
+            'title': '택배 왔습니다', 'genre': '웹소설, 무협',
+        }, 'novel', 'novel'), '웹소설')
+
+    def test_naver_series_primary_is_enriched_by_webtoon(self):
+        primary = {
+            'id': 'naver:1', 'source': 'naver', 'source_label': '네이버시리즈',
+            'title': '잔불의 기사 (총 246화/미완결)',
+            'url': 'https://series.naver.com/comic/detail.series?productNo=6034771',
+            'publisher': '네이버시리즈', 'cover': 'series-cover',
+        }
+        fallback = {
+            'id': 'naver_webtoon:768536', 'source': 'naver_webtoon',
+            'title': '잔불의 기사', 'author': '환댕', 'publisher': '네이버웹툰',
+            'url': 'https://comic.naver.com/webtoon/list?titleId=768536',
+            'publication_status': '1', 'publication_start_date': '2021-03-21',
+            'total_chapters': 246, 'cover': 'webtoon-cover',
+        }
+        detail = {
+            'title': '잔불의 기사', 'author': '환댕', 'publisher': '네이버시리즈',
+            'genre': '소년', 'cover': 'series-cover', 'publication_status': '0',
+            'link': primary['url'],
+        }
+        with patch.object(m, '_remote_fetch_metadata', return_value=detail):
+            combined = self.provider()._combine_naver_candidates(
+                [primary, fallback], 'series')
+        self.assertEqual(len(combined), 1)
+        row = combined[0]
+        self.assertEqual(row['source_label'], '네이버시리즈 + 네이버웹툰')
+        self.assertEqual(row['title'], '잔불의 기사 (총 246화/미완결)')
+        self.assertEqual(row['metadata']['publisher'], '네이버시리즈')
+        self.assertEqual(row['metadata']['cover'], 'series-cover')
+        self.assertEqual(row['metadata']['publication_status'], '1')
+        self.assertEqual(row['metadata']['publication_start_date'], '2021-03-21')
+        self.assertIn('series.naver.com', row['metadata']['link'])
+        self.assertIn('comic.naver.com', row['metadata']['link'])
+
+        with patch.object(m, '_remote_fetch_metadata', return_value=detail):
+            volume = self.provider()._combine_naver_candidates(
+                [{**primary, 'title': '잔불의 기사 [단행본] (총 3권/미완결)'}, fallback],
+                'single')
+        self.assertNotIn('total_chapters', volume[0]['metadata'])
+
+    def test_naver_webtoon_hiatus_metadata(self):
+        search = {'searchWebtoonResult': {'searchViewList': [{
+            'titleId': 768536, 'titleName': '잔불의 기사',
+            'communityArtists': [{'name': '환댕'}], 'rest': True,
+            'finished': False, 'articleTotalCount': 246,
+            'lastArticleServiceDate': '26.07.05',
+        }]}}
+        detail = {
+            'titleId': 768536, 'titleName': '잔불의 기사', 'rest': True,
+            'finished': False, 'thumbnailUrl': 'https://example.com/cover.jpg',
+            'age': {'type': 'RATE_15'},
+            'curationTagList': [
+                {'tagName': '판타지', 'curationType': 'GENRE_FANTASY'},
+                {'tagName': '성장물', 'curationType': 'CUSTOM_TAG'},
+            ],
+        }
+        chronology = {'totalCount': 246, 'articleList': [
+            {'no': 1, 'serviceDateDescription': '21.03.21'},
+        ]}
+
+        def response(url, *_args, **_kwargs):
+            if '/api/search/all?' in url:
+                return search
+            if '/api/article/list/info?' in url:
+                return detail
+            if '/api/article/list?' in url:
+                return chronology
+            raise AssertionError(url)
+
+        adapter = api.SearchAdapter(lambda query, title: query == title)
+        with patch.object(adapter, '_get_json', side_effect=response):
+            row = adapter._search_naver_webtoon('잔불의 기사', {'MAX_RESULTS': 20})[0]
+        self.assertEqual(row['publisher'], '네이버웹툰')
+        self.assertEqual(row['publication_status'], '1')
+        self.assertEqual(row['publication_start_date'], '2021-03-21')
+        self.assertEqual(row['publication_end_date'], '')
+        self.assertEqual(row['total_chapters'], 0)
+        self.assertEqual(row['books_lv'], 'ma15+')
+        self.assertEqual(row['genre'], '판타지')
+        self.assertEqual(row['tags'], '성장물')
+
+    def test_naver_webtoon_completed_chapters_and_end_date(self):
+        search = {'searchWebtoonResult': {'searchViewList': [{
+            'titleId': 1, 'titleName': '완결 작품', 'finished': True,
+            'articleTotalCount': 44, 'lastArticleServiceDate': '24.05.06',
+        }]}}
+        detail = {'titleId': 1, 'titleName': '완결 작품', 'finished': True, 'rest': False}
+        chronology = {'totalCount': 44, 'articleList': [
+            {'no': 1, 'serviceDateDescription': '20.01.02'},
+        ]}
+
+        def response(url, *_args, **_kwargs):
+            if '/api/search/all?' in url:
+                return search
+            if '/api/article/list/info?' in url:
+                return detail
+            if '/api/article/list?' in url:
+                return chronology
+            raise AssertionError(url)
+
+        adapter = api.SearchAdapter(lambda query, title: query == title)
+        with patch.object(adapter, '_get_json', side_effect=response):
+            row = adapter._search_naver_webtoon('완결 작품', {'MAX_RESULTS': 20})[0]
+        self.assertEqual(row['publication_status'], '2')
+        self.assertEqual(row['publication_start_date'], '2020-01-02')
+        self.assertEqual(row['publication_end_date'], '2024-05-06')
+        self.assertEqual(row['total_chapters'], 44)
 
     def test_naver_genre_and_publisher(self):
         page = '<a href="?genreCode=201">로맨스</a><ul class="end_info"><li><span><a href="?genreCode=206">무협</a></span></li><li><span>출판사</span><a>제이플러스</a></li></ul><div class="end_dsc">'
@@ -41,6 +229,21 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(metadata['publisher'], '제이플러스')
         metadata['tags'] = m._metadata_remove_terms('NOVEL, 무협, 먼치킨', 'NOVEL, COMIC, WEBTOON')
         self.assertEqual(m._metadata_clean(metadata)['tags'], '먼치킨')
+
+    def test_naver_series_publisher_is_stable(self):
+        from types import SimpleNamespace
+        page = '''
+          <meta property="og:title" content="작품">
+          <ul class="end_info">
+            <li><span>글</span><a>작가</a></li>
+            <li><span>출판사</span><a>별도 임프린트</a></li>
+          </ul><div class="end_dsc"></div>
+        '''
+        response = SimpleNamespace(text=page, raise_for_status=lambda: None)
+        with patch('requests.get', return_value=response):
+            metadata = m._remote_fetch_metadata(
+                'https://series.naver.com/comic/detail.series?productNo=1', 'naver')
+        self.assertEqual(metadata['publisher'], '네이버시리즈')
 
     def test_extended_metadata_fields(self):
         item = m._metadata_clean({'publication_status': 0, 'books_lv': 'everyone',
@@ -144,6 +347,20 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(row['publication_end_date'], '2026-01-10T17:50:15+09:00')
         self.assertEqual(row['total_chapters'], 1123)
 
+    def test_kakaopage_uses_webtoon_category_for_manhwa(self):
+        categories = []
+
+        def fake_search(_adapter, _query, cfg):
+            categories.append(cfg.get('KAKAOPAGE_CATEGORY'))
+            return []
+
+        with patch.object(api.SearchAdapter, '_search_kakaopage', fake_search):
+            api.search('kakaopage', '작품', lambda _query, _title: True,
+                       content_kind='manhwa')
+            api.search('kakaopage', '작품', lambda _query, _title: True,
+                       content_kind='novel')
+        self.assertEqual(categories, ['webtoon', 'novel'])
+
     def test_episode_range_coverage(self):
         def file(name):
             return {'file_path':'/books/'+name+'.txt','file_format':'txt'}
@@ -202,7 +419,7 @@ class ProviderTests(unittest.TestCase):
             old.assert_not_called()
 
     def test_author_and_partial(self):
-        def fake(source, query, matches):
+        def fake(source, query, matches, **kwargs):
             self.assertEqual(query, '작품')
             return [self.row(source, '다른 사람'), self.row(source, '작가')]
         with patch.object(m, 'search_additional_provider', fake):
@@ -213,7 +430,7 @@ class ProviderTests(unittest.TestCase):
         self.assertFalse(m._metadata_title_matches('작품', '작품의 다음 이야기'))
 
     def test_failure_isolated(self):
-        def fake(source, query, matches):
+        def fake(source, query, matches, **kwargs):
             if source == 'novelpia':
                 raise TimeoutError('fixture timeout')
             return [self.row(source)]
