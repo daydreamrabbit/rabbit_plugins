@@ -279,3 +279,7 @@
     gap: 0.8rem;
   }
 }
+
+.rabbit-recent-books__tabs, .rabbit-recent-books__row { user-select: none; }
+.rabbit-recent-books__tabs.is-dragging, .rabbit-recent-books__row.is-dragging { cursor: grabbing; scroll-behavior: auto; }
+.rabbit-recent-books img { -webkit-user-drag: none; }

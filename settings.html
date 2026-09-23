@@ -56,27 +56,32 @@
       <div class="rabbit-setting-panel rabbit-metadata-source-panel">
         <label class="rabbit-setting-label">검색 제공처 및 우선순위</label>
         <div id="rabbit-metadata-sources" class="rabbit-metadata-sources" aria-label="메타데이터 제공처 순서"></div>
-        <input type="hidden" name="metadata_sources" value="series_db,ridi,naver,kyobo">
-        <p>손잡이를 끌어 순서를 바꾸고, 체크한 제공처만 검색합니다. 체크하지 않은 제공처는 검색하지 않습니다.</p>
+        <input type="hidden" name="metadata_sources" value="series_db,ridi,naver,kyobo,kakao_webtoon,kakaopage,munpia,novelpia">
+        <p>손잡이를 끌어 순서를 바꾸고, 체크한 제공처만 검색합니다. 체크하지 않은 제공처는 검색하지 않습니다. 카카오페이지·문피아·노벨피아는 소설, 카카오웹툰은 웹툰 유형에만 사용됩니다.</p>
         <p>위에 있을수록 우선순위가 높습니다. 정확히 맞는 후보만 선택하며, 선택된 제공처의 값은 우선순서대로 빈 필드를 보완합니다. 링크는 중복을 제거해 합칩니다.</p>
       </div>
 
       <div class="rabbit-setting-subpanel rabbit-setting-fields-panel">
         <label class="rabbit-setting-label">자동으로 가져올 필드</label>
+        <p>선택한 항목 중 제공처에서 확인된 값만 저장합니다. 연재일은 시작권·완결권을 식별할 수 있을 때 반영하며, 마지막 업데이트 날짜를 종료일로 사용하지 않습니다.</p>
         <div class="rabbit-metadata-fields">
+          <label><input type="checkbox" data-metadata-field="summary"> 작품 소개</label>
+          <label><input type="checkbox" data-metadata-field="publication_status"> 연재상태</label>
+          <label><input type="checkbox" data-metadata-field="books_lv"> 연령등급</label>
+          <label><input type="checkbox" data-metadata-field="publication_start_date"> 연재시작일</label>
+          <label><input type="checkbox" data-metadata-field="publication_end_date"> 연재종료일</label>
           <label><input type="checkbox" data-metadata-field="title" checked> 제목</label>
           <label><input type="checkbox" data-metadata-field="localized_series" checked> 원제</label>
           <label><input type="checkbox" data-metadata-field="author" checked> 글작가</label>
           <label><input type="checkbox" data-metadata-field="cover_artist" checked> 그림작가</label>
           <label><input type="checkbox" data-metadata-field="publisher" checked> 출판사</label>
-          <label><input type="checkbox" data-metadata-field="summary" checked> 책 소개</label>
           <label><input type="checkbox" data-metadata-field="genre" checked> 장르</label>
           <label><input type="checkbox" data-metadata-field="tags" checked> 태그</label>
           <label><input type="checkbox" data-metadata-field="release_date" checked> 발매일</label>
           <label><input type="checkbox" data-metadata-field="isbn" checked> ISBN</label>
           <label><input type="checkbox" data-metadata-field="link" checked> 관련 링크</label>
         </div>
-        <input type="hidden" name="metadata_fields" value="title,localized_series,author,cover_artist,publisher,summary,genre,tags,release_date,isbn,link,cover">
+        <input type="hidden" name="metadata_fields" value="title,localized_series,author,cover_artist,publisher,genre,tags,release_date,isbn,link,cover">
       </div>
     </div>
 
@@ -86,15 +91,16 @@
         <div class="rabbit-metadata-cover-options">
           <label class="rabbit-setting-toggle">
             <input type="checkbox" name="metadata_collect_cover" checked>
-            <span>웹툰 표지 가져오기 활성화</span>
+            <span>메타데이터 표지 수집</span>
           </label>
+          <p>내부 이미지가 있는 EPUB·압축 만화와 PDF 등은 내부 표지를 유지합니다. 웹툰은 Series.db 표지를 우선하고, 없으면 외부 표지를 한 번 저장해 모든 회차가 공유합니다. 잠긴 자료는 기존 덮어쓰기 설정을 따릅니다.</p>
           <div class="rabbit-cover-kind-setting">
-            <span class="rabbit-setting-label">표지를 가져올 자료 유형</span>
+            <span class="rabbit-setting-label">표지 수집 대상 라이브러리 유형</span>
             <div id="rabbit-metadata-cover-kinds" class="rabbit-choice-grid rabbit-metadata-cover-kinds" role="group" aria-label="표지를 수집할 자료 유형">
               <span class="rabbit-setting-loading">속성 목록을 불러오는 중...</span>
             </div>
             <input type="hidden" name="metadata_cover_kinds" value="manga,novel,book,unspecified">
-            <p>선택한 라이브러리 유형에만 검색 결과 표지를 저장합니다. 전체 선택과 Shift 범위 선택을 지원합니다.</p>
+            <p>위 옵션을 켜면 아래에서 선택한 라이브러리 유형에만 검색 결과 표지를 저장합니다. 끄면 모든 유형에서 표지를 수집하지 않습니다. 전체 선택과 Shift 범위 선택을 지원합니다.</p>
           </div>
         </div>
         <div class="rabbit-metadata-overwrite-options">
@@ -148,6 +154,9 @@
 
       <div class="rabbit-setting-panel rabbit-metadata-search-setting">
         <div class="rabbit-setting-panel-title"><i class="fa-solid fa-magnifying-glass"></i> 검색어 정리</div>
+        <label class="rabbit-setting-label" for="rabbit-novelpia-search">노벨피아 작가 보조 검색 URL (선택)</label>
+        <input id="rabbit-novelpia-search" class="rabbit-setting-input" name="novelpia_author_search_url" type="url" placeholder="https://검색서버/search">
+        <p>기본 보조 검색은 설정 없이 Yahoo 일본·네이버의 공개 검색을 사용합니다. 별도의 SearXNG JSON 검색을 추가할 경우에만 입력하세요. 제목·작가는 노벨피아에서 검증하며, 공개 검색에도 없는 작품은 찾지 못할 수 있습니다.</p>
         <label class="rabbit-setting-label" for="rabbit-metadata-search-remove">검색에서 제거할 키워드</label>
         <textarea id="rabbit-metadata-search-remove" class="rabbit-setting-input rabbit-setting-textarea" name="metadata_search_remove_keywords" rows="3" placeholder="(리디)&#10;[미즈], 한정판"></textarea>
         <p>메타데이터 검색어를 만들 때만 제거합니다. 쉼표, 세미콜론 또는 줄바꿈으로 구분하세요.</p>

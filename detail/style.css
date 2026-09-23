@@ -30,6 +30,7 @@
 .ds :where(h1, h2, h3, p, dl, dd) { margin: 0; }
 .ds button,
 .ds input,
+.ds select,
 .ds textarea { font: inherit; }
 .ds button { color: inherit; cursor: pointer; }
 .ds button:disabled { cursor: default; opacity: .55; }
@@ -433,6 +434,7 @@
 .ds-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 13px; color: var(--ds-muted); font-size: 11px; }
 .ds-field:last-child { margin-bottom: 0; }
 .ds-field input,
+.ds-field select,
 .ds-field textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--ds-border); border-radius: 5px; background: var(--ds-soft); color: var(--ds-text); font-size: 12px; }
 .ds-field textarea { min-height: 260px; resize: vertical; line-height: 1.7; }
 .ds-field small { font-size: 10px; }
@@ -801,3 +803,8 @@
 @media (prefers-reduced-motion: reduce) {
   .ds *, .ds *::before, .ds *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+
+/* Keep numeric validation without browser stepper buttons. */
+.ds input[name="manual_chapter_count"] { appearance: textfield; -moz-appearance: textfield; }
+.ds input[name="manual_chapter_count"]::-webkit-inner-spin-button,
+.ds input[name="manual_chapter_count"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
