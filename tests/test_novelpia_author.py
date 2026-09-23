@@ -24,7 +24,7 @@ class AuthorTests(unittest.TestCase):
             rows,ids=api.search_novelpia_author('작품','작가',lambda q,t:q in t,search_url='https://search.example/search')
             self.assertEqual(ids,['42'])
             self.assertEqual(len(rows),1)
-            self.assertEqual(rows[0]['genre'],'무협')
+            self.assertEqual(rows[0]['genre'],'웹소설, 무협')
             self.assertEqual(rows[0]['tags'],'회귀')
             self.assertEqual(rows[0]['cover'],'https://images.novelpia.com/imagebox/cover/a.jpg')
             rows,_=api.search_novelpia_author('작품','작가',lambda q,t:q==t,known_ids=['42'])

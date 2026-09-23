@@ -67,10 +67,82 @@ class ProviderTests(unittest.TestCase):
         payload = {'status':200, 'list':[{'novel_no':1, 'novel_name':'작품', 'novel_genre_arr':['공포','현대','오컬트'], 'is_complete':1, 'novel_age':0, 'start_date':'2021-07-21', 'complete_date':'2026-04-17'}]}
         with patch.object(api.SearchAdapter, '_request', return_value=(json.dumps(payload).encode(),response)):
             row=api.search('novelpia','작품',lambda q,t:q==t)[0]
-        self.assertEqual(row['genre'], '공포, 현대')
+        self.assertEqual(row['genre'], '웹소설, 공포, 현대')
         self.assertEqual(row['tags'], '오컬트')
         self.assertEqual(row['publication_status'], '2')
         self.assertEqual(row['books_lv'], 'everyone')
+
+    def test_munpia_detail_metadata(self):
+        search = {'result': {'searchNovelTabDtos': [{
+            'novelId': 366476, 'title': '금제술사의 대장간', 'author': '스테리엘',
+            'mainGenre': '판타지', 'subGenre': '라이트노벨', 'entryCount': 37,
+        }]}}
+        detail = {'code': 'M000_00000', 'result': {'novelInfo': {
+            'id': 366476, 'title': '금제술사의 대장간', 'authorName': '스테리엘',
+            'genres': ['판타지', '라이트노벨'], 'tags': [
+                {'title': '판타지'}, {'title': '천재'}, {'title': '이세계'},
+            ],
+            'finish': True, 'pause': False, 'chapterCount': 40,
+            'createdAt': '2023-05-15T20:16:57',
+            'updatedAt': '2026-09-21T23:53:56', 'isbn': 'G720:TEST',
+        }}}
+
+        def response(url, *_args, **_kwargs):
+            return detail if '/pc/novel-detail/' in url else search
+
+        adapter = api.SearchAdapter(lambda query, title: query == title)
+        with patch.object(adapter, '_get_json', side_effect=response):
+            row = adapter._search_munpia('금제술사의 대장간', {'MAX_RESULTS': 20})[0]
+        self.assertEqual(row['genre'], '웹소설, 판타지, 라이트노벨')
+        self.assertEqual(row['tags'], '판타지, 천재, 이세계')
+        self.assertEqual(row['publication_status'], '2')
+        self.assertEqual(row['publication_start_date'], '2023-05-15T20:16:57')
+        self.assertEqual(row['publication_end_date'], '2026-09-21T23:53:56')
+        self.assertEqual(row['total_chapters'], 40)
+        self.assertEqual(row['isbn'], 'G720:TEST')
+
+        detail['result']['novelInfo']['isbn'] = ''
+        with patch.object(adapter, '_get_json', side_effect=response):
+            row = adapter._search_munpia('금제술사의 대장간', {'MAX_RESULTS': 20})[0]
+        self.assertEqual(row['isbn'], 'munpia:366476')
+
+    def test_kakaopage_extended_metadata(self):
+        search = {'result': {'list': [{
+            'series_id': 57868498, 'title': '변경백 서자는 황제였다',
+        }]}}
+        overview = {'result': {'content': {
+            'series_id': 57868498, 'title': '변경백 서자는 황제였다',
+            'authors': '기준석', 'category': '웹소설', 'sub_category': '판타지',
+            'thumbnail': 'cover-key', 'age_grade': 0, 'on_issue': 'N',
+            'start_sale_dt': '2021-11-17T11:52:26+09:00',
+            'last_slide_added_dt': '2026-01-10T17:50:15+09:00',
+            'on_sale_count': 1123,
+        }}}
+        about = {'result': {
+            'description': '작품 설명',
+            'theme_keyword_list': [{'title': '회귀'}, {'title': '먼치킨'}],
+            'detail': {'publisher_name': '판시아', 'category_list': ['웹소설', '판타지']},
+        }}
+
+        def response(url, *_args, **_kwargs):
+            if '/search/series?' in url:
+                return search
+            if '/content/overview?' in url:
+                return overview
+            if '/content/about?' in url:
+                return about
+            raise AssertionError(url)
+
+        adapter = api.SearchAdapter(lambda query, title: query == title)
+        with patch.object(adapter, '_get_json', side_effect=response):
+            row = adapter._search_kakaopage('변경백 서자는 황제였다', {'MAX_RESULTS': 20})[0]
+        self.assertEqual(row['genre'], '웹소설, 판타지')
+        self.assertEqual(row['tags'], '회귀, 먼치킨')
+        self.assertEqual(row['publisher'], '판시아')
+        self.assertEqual(row['publication_status'], '2')
+        self.assertEqual(row['publication_start_date'], '2021-11-17T11:52:26+09:00')
+        self.assertEqual(row['publication_end_date'], '2026-01-10T17:50:15+09:00')
+        self.assertEqual(row['total_chapters'], 1123)
 
     def test_episode_range_coverage(self):
         def file(name):

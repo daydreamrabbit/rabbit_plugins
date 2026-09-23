@@ -1310,12 +1310,14 @@
     return all('[data-metadata-source-options] [data-metadata-source]:checked').map((input) => input.value);
   }
 
-  function renderMetadataResults(results) {
+  function renderMetadataResults(results, showEmpty = true) {
     const target = $('[data-metadata-results]');
     if (!target) return;
     target.replaceChildren();
     if (!results.length) {
-      target.append(node('p', 'ds-metadata-empty', '검색 결과가 없습니다. 제목을 바꾸거나 다른 제공처를 선택해 보세요.'));
+      if (showEmpty) {
+        target.append(node('p', 'ds-metadata-empty', '검색 결과가 없습니다. 제목을 바꾸거나 다른 제공처를 선택해 보세요.'));
+      }
       return;
     }
     results.forEach((item) => {
@@ -1397,7 +1399,7 @@
     const status = $('[data-metadata-search-status]');
     metadataSearchLoading = true;
     status.textContent = '메타데이터를 검색하고 있습니다.';
-    renderMetadataResults([]);
+    renderMetadataResults([], false);
     try {
       const result = await request('/api/media/context-menu/book/plugins/action', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1413,7 +1415,7 @@
       status.textContent = metadataSearchResults.length + '개 후보를 찾았습니다.';
     } catch (error) {
       status.textContent = error.message || '메타데이터 검색에 실패했습니다.';
-      renderMetadataResults([]);
+      renderMetadataResults([], false);
     } finally { metadataSearchLoading = false; }
   }
 

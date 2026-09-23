@@ -17,7 +17,7 @@ DEFAULT_USER_AGENT = "Mozilla/5.0 Chrome/126 Safari/537.36"
 NOVELPIA_FAILURE_COOLDOWN = 300
 SOURCE_KINDS = {"kakao_webtoon": "manhwa", "kakaopage": "novel",
                 "munpia": "novel", "novelpia": "novel"}
-NOVEL_GENRES = {"판타지", "무협", "현대", "로맨스", "현대판타지", "라이트노벨", "공포", "SF", "스포츠", "대체역사", "기타"}
+NOVEL_GENRES = {"웹소설", "판타지", "무협", "현대", "로맨스", "현대판타지", "라이트노벨", "공포", "SF", "스포츠", "대체역사", "기타"}
 SOURCE_LABELS = {"kakao_webtoon": "카카오웹툰", "kakaopage": "카카오페이지",
                  "munpia": "문피아", "novelpia": "노벨피아"}
 
@@ -183,32 +183,65 @@ class SearchAdapter:
             title = self._clean_text(merged.get("title"))
             if not title or not series_id:
                 continue
+            about = merged.get("_about") or {}
+            about_detail = about.get("detail") or {}
+            category_list = about_detail.get("category_list") or []
+            genre = self._clean_text(category_list) or self._clean_text(
+                [merged.get("category"), merged.get("sub_category")]
+            )
+            tags = self._clean_text([
+                keyword.get("title") if isinstance(keyword, dict) else keyword
+                for keyword in (about.get("theme_keyword_list") or [])
+            ])
+            status = self._kakaopage_status(merged)
+            completed = status.get("publication_status") == "2"
             results.append(
                 self._item(
                     source="카카오페이지",
                     title=title,
                     author=self._clean_text(merged.get("authors")),
-                    publisher="카카오페이지",
+                    publisher=self._clean_text(about_detail.get("publisher_name")) or "카카오페이지",
                     cover=self._kakaopage_image(merged.get("thumbnail")),
-                    description=merged.get("description") or "",
+                    description=about.get("description") or merged.get("description") or "",
                     link=f"https://page.kakao.com/content/{series_id}",
-                    genre=self._clean_text(merged.get("sub_category") or merged.get("category")),
-                    tags=self._clean_text(merged.get("category")),
+                    genre=genre,
+                    tags=tags,
                     pub_date=merged.get("start_sale_dt") or merged.get("last_slide_added_dt") or "",
                     score=self._kakaopage_score(merged),
                     release_date=merged.get("start_sale_dt") or "",
+                    publication_start_date=merged.get("start_sale_dt") or "",
+                    publication_end_date=merged.get("last_slide_added_dt") if completed else "",
+                    total_chapters=merged.get("on_sale_count") or 0,
                     books_lv={0: "everyone", 15: "ma15+", 19: "adult only"}.get(merged.get("age_grade"), ""),
+                    **status,
                 )
             )
         return results
 
     def _kakaopage_detail(self, series_id, cfg):
-        url = "https://bff-page.kakao.com/api/gateway/api/v1/content/overview?" + urllib.parse.urlencode({"series_id": series_id})
+        base = "https://bff-page.kakao.com/api/gateway/api/v1/content/"
+        query = urllib.parse.urlencode({"series_id": series_id})
         try:
-            data = self._get_json(url, cfg, headers=self._kakaopage_headers(cfg, ""))
-            return (data.get("result") or {}).get("content") or {}
+            data = self._get_json(base + "overview?" + query, cfg, headers=self._kakaopage_headers(cfg, ""))
+            content = (data.get("result") or {}).get("content") or {}
         except Exception:
             return {}
+        try:
+            about_data = self._get_json(base + "about?" + query, cfg, headers=self._kakaopage_headers(cfg, ""))
+            content["_about"] = about_data.get("result") or {}
+        except Exception:
+            pass
+        return content
+
+    @staticmethod
+    def _kakaopage_status(item):
+        # KakaoPage's web client maps on_issue Y to ongoing and N to complete.
+        status = str(item.get("on_issue") or "").upper()
+        if status == "Y":
+            return {"publication_status": "0"}
+        if status == "N":
+            return {"publication_status": "2"}
+        return {}
 
     @staticmethod
     def _novelpia_status(item):
@@ -292,7 +325,7 @@ class SearchAdapter:
                     cover=thumb,
                     description=self._clean_text(item.get("novel_story")),
                     link=f"https://novelpia.com/novel/{novel_no}",
-                    genre=self._clean_text([v for v in genres if v in NOVEL_GENRES]),
+                    genre=self._clean_text(["웹소설", *[v for v in genres if v in NOVEL_GENRES]]),
                     tags=self._clean_text([v for v in genres if v not in NOVEL_GENRES]),
                     pub_date="",
                     score="",
@@ -312,31 +345,68 @@ class SearchAdapter:
         data = self._get_json(url, cfg, headers=self._munpia_headers(cfg))
         items = ((data.get("result") or {}).get("searchNovelTabDtos")) or []
 
-        results = []
-        for item in items[: self._int(cfg.get("MAX_RESULTS"), 20, 1, 100)]:
+        candidates = []
+        max_results = self._int(cfg.get("MAX_RESULTS"), 20, 1, 100)
+        for item in items:
             if item.get("adult") and not self._truthy(cfg.get("INCLUDE_ADULT")):
                 continue
             novel_id = item.get("novelId")
             title = self._clean_text(item.get("title"))
-            if not novel_id or not title:
+            if not novel_id or not title or not self._matches_candidate_title(query, title, cfg):
                 continue
-            genres = [item.get("mainGenre"), item.get("subGenre")]
+            candidates.append((item, novel_id))
+            if len(candidates) >= max_results:
+                break
+
+        details = self._parallel_map(
+            lambda candidate: self._munpia_detail(candidate[1], cfg),
+            candidates,
+        )
+        results = []
+        for (item, novel_id), detail in zip(candidates, details):
+            merged = dict(item)
+            merged.update(detail)
+            title = self._clean_text(merged.get("title"))
+            genres = merged.get("genres") or [merged.get("mainGenre"), merged.get("subGenre")]
+            status = self._munpia_status(merged)
+            completed = status.get("publication_status") == "2"
             results.append(
                 self._item(
                     source="문피아",
                     title=title,
-                    author=self._clean_text(item.get("author")),
+                    author=self._clean_text(merged.get("authorName") or merged.get("author")),
                     publisher="문피아",
-                    cover=item.get("coverUrl") or "",
-                    description=item.get("story") or "",
+                    cover=merged.get("coverUrl") or "",
+                    description=merged.get("introduction") or merged.get("story") or "",
                     link=f"https://www.munpia.com/novel/detail/{novel_id}",
-                    genre=", ".join(self._clean_text(value) for value in genres if self._clean_text(value)),
-                    tags=self._join_names(item.get("tag") or []),
-                    pub_date=self._clean_text(item.get("updateAt")),
+                    genre=self._clean_text(["웹소설", *genres]),
+                    tags=self._join_names(merged.get("tags") or merged.get("tag") or []),
+                    pub_date=self._clean_text(merged.get("createdAt") or merged.get("updateAt")),
                     score="",
+                    isbn=self._clean_text(merged.get("isbn")) or f"munpia:{novel_id}",
+                    release_date=merged.get("createdAt") or "",
+                    publication_start_date=merged.get("createdAt") or "",
+                    publication_end_date=merged.get("updatedAt") if completed else "",
+                    total_chapters=self._int(merged.get("chapterCount") or merged.get("entryCount"), 0, 0, 1000000),
+                    **status,
                 )
             )
         return results
+
+    def _munpia_detail(self, novel_id, cfg):
+        url = f"https://www.munpia.com/api/v1/pc/novel-detail/{novel_id}"
+        try:
+            data = self._get_json(url, cfg, headers=self._munpia_headers(cfg))
+            return ((data.get("result") or {}).get("novelInfo")) or {}
+        except Exception:
+            return {}
+
+    def _munpia_status(self, item):
+        if self._truthy(item.get("finish") if "finish" in item else item.get("finished")):
+            return {"publication_status": "2"}
+        if self._truthy(item.get("pause")):
+            return {"publication_status": "1"}
+        return {"publication_status": "0"}
 
     def _kakaopage_headers(self, cfg, query):
         headers = {

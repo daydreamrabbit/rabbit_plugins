@@ -59,7 +59,7 @@ from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '3.0.0'
+PLUGIN_VERSION = '3.0.1'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -2851,14 +2851,17 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 continue
             if source == 'tags' and existing_value and metadata.get('genre'):
                 # Older scans could save a provider category in Tags. Once
-                # the same value is known as a Genre, remove only that stale
-                # duplicate while preserving unrelated local tags.
+                # the same value is known as a Genre, remove that stale
+                # duplicate and add the provider's actual keywords while
+                # preserving unrelated local tags.
                 cleaned_tags = _metadata_remove_terms(existing_value, metadata.get('genre'))
                 if overwrite:
                     if value != existing_value:
                         values[column] = value
-                elif cleaned_tags != existing_value:
-                    values[column] = cleaned_tags
+                else:
+                    merged_tags = _join_terms([cleaned_tags, value])
+                    if merged_tags != existing_value:
+                        values[column] = merged_tags
                 continue
             if overwrite or not existing_value or (
                 column == 'summary' and _summary_should_refresh(existing_value, value)
