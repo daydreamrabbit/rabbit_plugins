@@ -57,6 +57,8 @@
     ['publisher', '출판사'],
     ['publication_start_date', '연재시작일'],
     ['publication_end_date', '연재종료일'],
+    ['manual_chapter_count', '회차 수'],
+    ['books_lv', '연령등급'],
     ['isbn', 'ISBN / Web ID'],
     ['genre', '장르'],
     ['tags', '태그'],
@@ -370,7 +372,9 @@
 
   function renderSummary(value) {
     const target = $('[data-summary]');
-    const source = String(value || '');
+    const source = String(value || '')
+      .replace(/^\s*<(h[1-6]|p|div|strong|b)\b[^>]*>\s*작품\s*소개\s*[:：]?\s*<\/\1>\s*/i, '')
+      .replace(/^\s*(?:#{1,6}\s*)?작품\s*소개(?:\s*[:：]\s*|\s+|$)/, '');
     const parsed = new DOMParser().parseFromString(source, 'text/html');
     parsed.body.querySelectorAll('script, style, iframe, object, embed, svg').forEach((element) => element.remove());
     target.replaceChildren();
@@ -487,6 +491,13 @@
       return { kind: 'adult', label: '18세 이용가' };
     }
     return { kind: 'general', label: '전체 이용가' };
+  }
+
+  function editContentRatingValue() {
+    const rating = getContentRating();
+    if (!rating) return String(meta.books_lv ?? '').trim();
+    const badge = contentRatingBadge(rating);
+    return { general: 'everyone', teen: 'ma15+', adult: 'm', manga: 'r18', porn: 'adult only 18+' }[badge.kind] || '';
   }
 
   function applyContentRating(rows = []) {
@@ -1168,11 +1179,10 @@
       : type === 'audiobook' ? '트랙 수' : type === 'video' ? '에피소드 수' : '총권수';
     const rows = [];
     if (books.length < 2) rows.push(['파일포맷', formats.join(' / ') || '—']);
-    rows.push([countLabel, String(onlyChapters ? (count || availableChapterCount) : totalVolumes)]);
-    const chapters = Number(meta.chapter_count ?? meta.chapters_count ?? meta.total_chapters ?? 0);
-    const chapterTotal = chapterTarget || chapters || coverage.expected || availableChapterCount;
-    if (!onlyChapters && (hasVolumesAndChapters || (Number.isFinite(chapters) && chapters > 0))) {
-      rows.push(['회차 수', String(chapterTotal)]);
+    if (!onlyChapters) rows.push([countLabel, String(totalVolumes)]);
+    const chapters = Number(meta.manual_chapter_count || (['완결', '연재중단'].includes(explicitStatus) ? meta.publication_coverage?.total : 0) || 0);
+    if (Number.isInteger(chapters) && chapters > 0) {
+      rows.push(['회차 수', String(chapters)]);
     }
     if (meta.author && meta.author !== '-') rows.push(['글작가', meta.author]);
     const artist = meta.artist || meta.cover_artist;
@@ -1182,7 +1192,11 @@
       const chapterFinalFound = chapterTarget > 0
         && chapterNumbers.some((number) => number === chapterTarget)
         && !coverage.missing;
-      const status = hasExplicitStatus
+      const remoteCoverage = meta.publication_coverage || {};
+      const incomplete = explicitStatus === '완결' && remoteCoverage.known && remoteCoverage.missing > 0;
+      const status = incomplete
+        ? '누락 (' + remoteCoverage.present + '/' + remoteCoverage.total + '화)'
+        : hasExplicitStatus
         ? explicitStatus
         : !hasChapterMetadata() && count === 1 && volume === 1 && comicFormat === 'special'
           ? '단편'
@@ -1199,9 +1213,14 @@
                 ? '완결'
                 : '누락 (' + (availableVolumeCount || books.length) + '/' + count + '권)')
             : volume > 0 ? '연재' : '알 수 없음';
-      rows.push(['연재상태', status]);
-      rows.push(['연재시작일', meta.publication_dates?.start || '—']);
-      rows.push(['연재종료일', meta.publication_dates?.end || '—']);
+      if (contentKind === 'book') {
+        const published = meta.release_date || books.find((book) => book.release_date)?.release_date;
+        rows.push(['출간일', published ? String(published).slice(0, 10) : '—']);
+      } else {
+        rows.push(['연재상태', status]);
+        rows.push(['연재시작일', meta.publication_dates?.start || '—']);
+        rows.push(['연재종료일', meta.publication_dates?.end || '—']);
+      }
       rows.push(['연령등급', ageRating?.label || '—']);
     }
     const identifier = [meta.isbn, meta.web_id]
@@ -1271,9 +1290,13 @@
   function renderMetadataSources() {
     const target = $('[data-metadata-source-options]');
     if (!target) return;
-    const labels = { series_db: '데이터베이스', ridi: '리디', naver: '네이버', kyobo: '교보문고' };
-    const selected = metadataSources.length ? metadataSources : Object.keys(labels);
-    target.replaceChildren(...Object.entries(labels).map(([key, label]) => {
+    const labels = { series_db: '데이터베이스', ridi: '리디', naver: '네이버', kyobo: '교보문고', kakao_webtoon: '카카오웹툰', kakaopage: '카카오페이지', munpia: '문피아', novelpia: '노벨피아' };
+    const selected = metadataSources;
+    target.replaceChildren(...Object.entries(labels).filter(([key]) => {
+      const kind = ({'소설':'novel','라노벨':'novel','라이트노벨':'novel','웹툰':'manhwa'})[contentKind] || contentKind;
+      return key === 'kakao_webtoon' ? kind === 'manhwa'
+        : ['kakaopage','munpia','novelpia'].includes(key) ? kind === 'novel' : true;
+    }).map(([key, label]) => {
       const field = node('label', 'ds-metadata-source-option');
       const input = document.createElement('input');
       input.type = 'checkbox'; input.value = key; input.checked = selected.includes(key);
@@ -1590,16 +1613,29 @@
       dirty = false;
       return;
     }
+    editFields();
     form.reset();
-    for (const [key] of fields) {
+    for (const [key] of activeEditFields()) {
       if (!form.elements[key]) continue;
-      const value = key === 'link'
+      const value = key === 'books_lv'
+        ? editContentRatingValue()
+        : key === 'link'
         ? split(meta[key]).join(', ')
         : key === 'publication_start_date'
           ? meta.publication_dates?.start || ''
           : key === 'publication_end_date'
             ? meta.publication_dates?.end || ''
             : meta[key] || '';
+      if (key === 'books_lv') {
+        const select = form.elements[key];
+        for (const option of Array.from(select.options)) if (option.dataset.currentRating) option.remove();
+        if (value && !Array.from(select.options).some((option) => option.value === value)) {
+          const option = node('option', '', '현재 값: ' + value);
+          option.value = value;
+          option.dataset.currentRating = 'true';
+          select.append(option);
+        }
+      }
       form.elements[key].value = value;
     }
     form.elements.summary.value = meta.summary || '';
@@ -1667,6 +1703,14 @@
     try {
       await request('/api/media/detail/edit', { method: 'POST', body: data });
       if (!root.isConnected) return;
+      if (data.has('books_lv')) {
+        // The series edit updates every book. Discard the old derived ratings
+        // so lowering or clearing a rating is visible before the next fetch.
+        for (const item of [meta, ...books]) {
+          item.books_lv = String(data.get('books_lv') || '');
+          for (const key of ['content_rating_level', 'content_rating_label', 'age_rating_level', 'age_rating_label', 'age_rating']) delete item[key];
+        }
+      }
       let detailFieldsError = '';
       let detailFieldsWarning = '';
       let coverArtistSaved = true;
@@ -1682,8 +1726,11 @@
               context: {
                 series_name: meta.series_name || context.seriesName,
                 cover_artist: String(data.get('cover_artist') || '').trim(),
-                publication_start_date: String(data.get('publication_start_date') || '').trim(),
-                publication_end_date: String(data.get('publication_end_date') || '').trim(),
+                ...(contentKind === 'book'
+                  ? { release_date: String(data.get('release_date') || '').trim() }
+                  : { publication_start_date: String(data.get('publication_start_date') || '').trim(),
+                      publication_end_date: String(data.get('publication_end_date') || '').trim() }),
+                manual_chapter_count: String(data.get('manual_chapter_count') || '').trim(),
               },
             }),
           });
@@ -1693,11 +1740,16 @@
           detailFieldsError = error.message;
         }
       }
-      for (const [key] of fields) {
-        if (key === 'publication_start_date' || key === 'publication_end_date') continue;
+      for (const [key] of activeEditFields()) {
+        if (key === 'release_date' || key === 'publication_start_date' || key === 'publication_end_date' || key === 'manual_chapter_count') continue;
         if (key !== 'cover_artist' || (!detailFieldsError && coverArtistSaved)) meta[key] = String(data.get(key) || '');
       }
       if (!detailFieldsError && (type === 'general' || type === 'adult')) {
+        if (contentKind === 'book') {
+          meta.release_date = String(data.get('release_date') || '').trim();
+          books.forEach((book) => { book.release_date = meta.release_date; });
+        }
+        meta.manual_chapter_count = String(data.get('manual_chapter_count') || '').trim();
         meta.publication_dates = {
           start: String(data.get('publication_start_date') || meta.publication_dates?.start || ''),
           end: String(data.get('publication_end_date') || meta.publication_dates?.end || ''),
@@ -1759,6 +1811,7 @@
         if (!book) continue;
         if (file.file_path) book.file_path = file.file_path;
         if (file.file_format) book.file_format = file.file_format;
+        book.release_date = file.release_date || '';
         book.pages_read = file.pages_read;
         book.is_completed = file.is_completed;
         book.last_read_at = file.last_read_at;
@@ -1766,6 +1819,7 @@
         if (file.count != null) book.count = file.count;
         if (file.number != null) book.number = file.number;
       }
+      if (contentKind === 'book') meta.release_date = (data.files || []).find((file) => file.release_date)?.release_date || '';
       const combinedGenres = [meta.genre, ...(data.files || []).map((file) => file.genre)].flatMap(split);
       const combinedTags = [meta.tags, ...(data.files || []).map((file) => file.tags)].flatMap(split);
       const cleanTerms = distinctGenreTags(combinedGenres.join(', '), combinedTags.join(', '));
@@ -1788,6 +1842,8 @@
       meta.publication_available_volume_count = Number(comicinfo.available_volume_count) || 0;
       meta.publication_status_label = comicinfo.publication_status_label || meta.publication_status_label || '';
       meta.publication_dates = data.publication_dates || {};
+      meta.publication_coverage = data.publication_coverage || {};
+      meta.manual_chapter_count = data.manual_chapter_count || '';
       canEdit = type !== 'video' && data.can_edit === true;
       editScope = data.edit_scope;
       libraryName = data.library_name || '';
@@ -1960,14 +2016,32 @@
     }
   }
 
+  function activeEditFields() {
+    if (contentKind !== 'book') return fields;
+    return fields.flatMap(([key, label]) => key === 'publication_start_date'
+      ? [['release_date', '출간일']]
+      : key === 'publication_end_date' ? [] : [[key, label]]);
+  }
+
   function editFields() {
     const target = $('[data-edit-fields]');
     target.replaceChildren();
-    for (const [key, label] of fields) {
+    for (const [key, label] of activeEditFields()) {
       const field = node('label', 'ds-field', label);
-      const input = document.createElement('input');
+      const input = document.createElement(key === 'books_lv' ? 'select' : 'input');
       input.name = key;
-      input.type = key === 'publication_start_date' || key === 'publication_end_date' ? 'date' : 'text';
+      if (key === 'books_lv') {
+        for (const [value, text] of [['', '미지정'], ['everyone', '전체 이용가'], ['ma15+', '15세 이용가'], ['m', '18세 이용가'], ['r18', '성인망가 (R18)'], ['adult only 18+', '포르노 (Adult Only 18+)']]) {
+          const option = node('option', '', text);
+          option.value = value;
+          input.append(option);
+        }
+        field.append(input);
+        target.append(field);
+        continue;
+      }
+      input.type = key === 'manual_chapter_count' ? 'number' : key === 'release_date' || key === 'publication_start_date' || key === 'publication_end_date' ? 'date' : 'text';
+      if (key === 'manual_chapter_count') { input.min = '1'; input.max = '1000000'; input.step = '1'; input.placeholder = '비워 두면 표시하지 않음'; }
       input.maxLength = key === 'link' ? 2000 : key === 'cover_artist' ? 500 : 4000;
       if (key === 'link') input.placeholder = '여러 주소는 쉼표(,)로 구분';
       field.append(input);

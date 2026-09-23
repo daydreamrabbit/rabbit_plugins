@@ -182,7 +182,7 @@
   syncKindAvailability();
   if (sourceList && sourceInput && fieldInput) {
     const sourceLabels = {
-      series_db: '데이터베이스', ridi: '리디', naver: '네이버', kyobo: '교보문고',
+      series_db: '데이터베이스', ridi: '리디', naver: '네이버', kyobo: '교보문고', kakao_webtoon: '카카오웹툰', kakaopage: '카카오페이지', munpia: '문피아', novelpia: '노벨피아',
     };
     const sourceKeys = Object.keys(sourceLabels);
     const readList = (value, fallback) => {
@@ -192,12 +192,14 @@
     };
     const configuredSources = String(savedConfig.metadata_sources || '').split(/[,;|]/)
       .map(item => item.trim().toLowerCase()).filter(item => sourceKeys.includes(item));
+    const selectedSources = new Set(Object.prototype.hasOwnProperty.call(savedConfig, 'metadata_sources')
+      ? configuredSources : sourceKeys);
     let sources = readList(configuredSources.join(','), sourceKeys);
     if (!sources.length) sources = sourceKeys.slice();
     const configuredFields = String(savedConfig.metadata_fields || '').split(/[,;|]/)
       .map(item => item.trim()).filter(Boolean);
     const sync = () => {
-      sourceInput.value = sources.filter(key => sourceList.querySelector(`[data-source="${key}"]`)?.checked)
+      sourceInput.value = sources.filter(key => sourceList.querySelector(`input[data-source="${key}"]`)?.checked)
         .join(',');
       fieldInput.value = [...root.querySelectorAll('[data-metadata-field]:checked')]
         .map(input => input.dataset.metadataField).join(',');
@@ -217,8 +219,12 @@
         row.innerHTML = `<span class="rabbit-metadata-source-grip" aria-hidden="true">⠿</span>`;
         const label = document.createElement('label');
         label.innerHTML = `<input type="checkbox" data-source="${key}"><span>${sourceLabels[key]}</span>`;
-        label.querySelector('input').checked = !configuredSources.length || configuredSources.includes(key);
-        label.querySelector('input').addEventListener('change', sync);
+        label.querySelector('input').checked = selectedSources.has(key);
+        label.querySelector('input').addEventListener('change', event => {
+          if (event.target.checked) selectedSources.add(key);
+          else selectedSources.delete(key);
+          sync();
+        });
         row.append(label);
         row.addEventListener('dragstart', event => {
           row.classList.add('is-dragging');
@@ -231,7 +237,7 @@
           event.preventDefault();
           const from = Number(event.dataTransfer.getData('text/plain'));
           const to = sources.indexOf(key);
-          if (!Number.isInteger(from) || from === to) return;
+          if (!Number.isInteger(from) || from < 0 || from >= sources.length || from === to) return;
           const [moved] = sources.splice(from, 1);
           sources.splice(to, 0, moved);
           render();

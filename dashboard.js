@@ -23,6 +23,48 @@
       }
     });
   }
+  function enableDragScroll(element) {
+    let start = null;
+    let suppressClick = false;
+    element.addEventListener('dragstart', event => event.preventDefault());
+    element.addEventListener('pointerdown', event => {
+      if (event.pointerType !== 'mouse' || event.button !== 0) return;
+      suppressClick = false;
+      start = { id: event.pointerId, x: event.clientX, left: element.scrollLeft, moved: false };
+    });
+    element.addEventListener('pointermove', event => {
+      if (!start || event.pointerId !== start.id) return;
+      if (!(event.buttons & 1)) { start = null; element.classList.remove('is-dragging'); return; }
+      const delta = event.clientX - start.x;
+      if (!start.moved && Math.abs(delta) < 6) return;
+      if (!start.moved) {
+        start.moved = true;
+        element.setPointerCapture(event.pointerId);
+        element.classList.add('is-dragging');
+      }
+      event.preventDefault();
+      element.scrollLeft = start.left - delta;
+    });
+    const finish = event => {
+      if (!start || start.id !== event.pointerId) return;
+      suppressClick = start.moved;
+      start = null;
+      element.classList.remove('is-dragging');
+      if (element.hasPointerCapture(event.pointerId)) element.releasePointerCapture(event.pointerId);
+    };
+    element.addEventListener('pointerup', finish);
+    element.addEventListener('pointercancel', finish);
+    element.addEventListener('lostpointercapture', finish);
+    element.addEventListener('click', event => {
+      if (!suppressClick || event.detail === 0) return;
+      suppressClick = false;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
+  }
+  enableDragScroll(tabs);
+  enableDragScroll(row);
+
   let activeIndex = 0;
   let tabScrollPosition = null;
 
@@ -95,6 +137,7 @@
     const image = document.createElement('img');
     image.src = coverUrl(book, title);
     image.alt = title;
+    image.draggable = false;
     image.loading = 'lazy';
     image.decoding = 'async';
     image.addEventListener('load', () => image.classList.add('is-loaded'), { once: true });
