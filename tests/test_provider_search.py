@@ -1,5 +1,7 @@
 """Run with: python -m unittest rabbit_plugins.tests.test_provider_search"""
 import unittest
+import json
+from types import SimpleNamespace
 from unittest.mock import patch
 from .. import rabbit_plugins as m
 from .. import provider_search as api
@@ -15,6 +17,111 @@ class ProviderTests(unittest.TestCase):
     def row(self, source, author='작가'):
         return dict(id=source, title='작품', source=source, author=author,
                     url='https://example.com/' + source, summary='소개', publisher=source)
+
+    def test_search_candidates_keep_their_own_covers(self):
+        ridi_payload = {'props': {'books': [
+            {'id': '896000382', 'book': {'title': {'main': '전설의 기사'},
+                                      'categories': [{'name': '판타지 e북'}]}},
+            {'id': '123000264', 'book': {'title': {'main': '전설의 기사 아크리안'},
+                'series': {'thumbnail': {'large': '//img.ridicdn.net/cover/123000264/large'}},
+                'categories': [{'name': '판타지 e북'}]}},
+        ]}}
+        ridi_html = '<script id="__NEXT_DATA__">' + json.dumps(ridi_payload, ensure_ascii=False) + '</script>'
+        kyobo_html = '''<meta property="og:image" content="https://contents.kyobobook.co.kr/resources/fo/images/common/logo.png">
+            <a href="https://product.kyobobook.co.kr/detail/S000001" class="prod_link">
+              <img data-kbbfn-bid="9791199489561"></a>
+            <a href="https://product.kyobobook.co.kr/detail/S000001">공작 하나</a>
+            <a href="https://product.kyobobook.co.kr/detail/S000002" class="prod_link">
+              <img data-src="https://example.com/two.jpg"></a>
+            <a href="https://product.kyobobook.co.kr/detail/S000002">공작 둘</a>'''
+        def fake_get(url, **kwargs):
+            return SimpleNamespace(text=ridi_html if 'ridibooks.com' in url else kyobo_html,
+                                   raise_for_status=lambda: None)
+        with patch('requests.get', side_effect=fake_get):
+            ridi = m._remote_search_page('ridi', '전설의 기사', 'novel', 'novel', allow_partial=True)
+            kyobo = m._remote_search_page('kyobo', '공작', 'book', 'book', allow_partial=True)
+        self.assertEqual(len(ridi), 2)
+        self.assertEqual(ridi[0]['cover'], 'https://img.ridicdn.net/cover/896000382/xxlarge#1')
+        self.assertEqual(ridi[1]['cover'], 'https://img.ridicdn.net/cover/123000264/large')
+        self.assertEqual([row['cover'] for row in kyobo], [
+            'https://contents.kyobobook.co.kr/sih/fit-in/300x0/pdt/9791199489561.jpg',
+            'https://example.com/two.jpg',
+        ])
+
+    def test_yes24_official_search_and_metadata_fields(self):
+        item = {
+            'itemId': 12345678, 'title': '클린 코드', 'author': '로버트 C. 마틴 저',
+            'publisher': '인사이트', 'goodsType': '국내도서',
+            'isbn13': '9788966260959', 'publishDate': '20131224',
+            'cover': 'https://image.yes24.com/goods/12345678/L',
+            'link': 'https://www.yes24.com/product/goods/12345678',
+            'adultYn': 'N', 'originalTitle': 'Clean Code',
+            'contentDetail': {'bookIntroduction': '개발자를 위한 책',
+                              'tableOfContents': '1장 목차'},
+        }
+        response = SimpleNamespace(
+            status_code=200, json=lambda: {'success': True, 'data': {'items': [
+                item, {**item, 'itemId': 99, 'title': '클린 코드와 다른 책'},
+            ]}}, raise_for_status=lambda: None)
+        with patch('requests.get', return_value=response) as get:
+            candidates = self.provider()._search_metadata(
+                '클린 코드', {'metadata_sources': 'yes24', 'yes24_api_key': 'private-key'},
+                content_kind='book', manual=False)
+        self.assertEqual(len(candidates), 1)
+        row = candidates[0]
+        self.assertEqual(row['source'], 'yes24')
+        self.assertEqual(row['cover'], item['cover'])
+        self.assertEqual(row['metadata']['localized_series'], 'Clean Code')
+        self.assertEqual(row['metadata']['summary'], '개발자를 위한 책')
+        self.assertNotIn('목차', row['metadata']['summary'])
+        self.assertEqual(row['metadata']['isbn'], '9788966260959')
+        self.assertEqual(row['metadata']['release_date'], '2013-12-24')
+        self.assertEqual(row['metadata']['author'], '로버트 C. 마틴')
+        self.assertNotIn('books_lv', row['metadata'])
+        self.assertEqual(get.call_args.args[0], 'https://apis.yes24.com/v1/goods/itemList')
+        self.assertEqual(get.call_args.kwargs['headers']['X-Api-Key'], 'private-key')
+        self.assertEqual(get.call_args.kwargs['params']['category'], 'ALL')
+        self.assertEqual(get.call_args.kwargs['params']['detail'], 'Y')
+        with patch('requests.get', return_value=response):
+            self.assertEqual(len(m._yes24_search('클린', 'novel', 'private-key', True)), 2)
+        with patch('requests.get') as get:
+            self.assertEqual(m._yes24_search('클린 코드', 'book', ''), [])
+            get.assert_not_called()
+
+    def test_yes24_errors_do_not_expose_api_key(self):
+        response = SimpleNamespace(status_code=401, raise_for_status=lambda: (_ for _ in ()).throw(
+            RuntimeError('authorization failed')))
+        with patch('requests.get', return_value=response), patch('builtins.print') as output:
+            self.assertEqual(m._yes24_search('클린 코드', 'book', 'private-key'), [])
+        self.assertNotIn('private-key', str(output.call_args_list))
+
+    def test_yes24_uses_general_key_for_adult_search(self):
+        provider = self.provider()
+        provider.get_plugin_config = lambda db_type, default=None: (
+            {'yes24_api_key': 'shared-key'} if db_type == 'general' else {})
+        with patch.object(m, '_yes24_search', return_value=[]) as search:
+            provider._search_metadata('작품', {'metadata_sources': 'yes24'},
+                                      db_type='adult', content_kind='novel', manual=True)
+        self.assertEqual(search.call_args.args[:3], ('작품', 'novel', 'shared-key'))
+
+    def test_yes24_public_introduction_fills_missing_api_text(self):
+        page = '''<div id="infoset_introduce" class="gd_infoSet">
+          <h4>소개</h4><textarea class="txtContentText">
+          첫 문단&lt;br/&gt;둘째 문단<br/>마지막 문단</textarea></div>
+          <div id="infoset_author">다른 설명</div>'''
+        response = SimpleNamespace(text=page, url='https://www.yes24.com/product/goods/139753162',
+                                   raise_for_status=lambda: None)
+        with patch('requests.get', return_value=response) as get:
+            summary = m._yes24_public_summary('139753162')
+        self.assertEqual(summary, '첫 문단\n둘째 문단\n마지막 문단')
+        self.assertEqual(get.call_args.args[0], 'https://www.yes24.com/product/goods/139753162')
+        row = {'id': 'yes24:139753162', 'source': 'yes24', 'title': '1시간만에 서버 관리자 되기',
+               'metadata': {'title': '1시간만에 서버 관리자 되기', 'author': '정복문'}}
+        with patch.object(m, '_yes24_public_summary', return_value=summary) as fetch:
+            merged = self.provider()._merge_metadata_candidates([row], 'book')
+        self.assertEqual(merged['metadata']['summary'], summary)
+        fetch.assert_called_once_with('139753162')
+        self.assertEqual(m._yes24_credits('정복문 저')[0], '정복문')
 
     def test_type_gates_and_priority(self):
         calls = []

@@ -346,6 +346,7 @@
     'series.naver.com': 'https://www.google.com/s2/favicons?domain=series.naver.com&sz=32',
     'naver.com': 'https://www.google.com/s2/favicons?domain=series.naver.com&sz=32',
     'kyobobook.co.kr': 'https://www.google.com/s2/favicons?domain=kyobobook.co.kr&sz=32',
+    'yes24.com': 'https://www.google.com/s2/favicons?domain=yes24.com&sz=32',
   });
 
   function siteInfo(link) {
@@ -586,7 +587,7 @@
         const response = await fetch(url, {
           credentials: 'same-origin',
           cache: 'no-store',
-          signal: AbortSignal.timeout(20000),
+          signal: AbortSignal.timeout(60000),
           ...options,
         });
         const body = await response.text();
@@ -1308,7 +1309,7 @@
   function renderMetadataSources() {
     const target = $('[data-metadata-source-options]');
     if (!target) return;
-    const labels = { series_db: '데이터베이스', ridi: '리디', naver: '네이버시리즈', naver_webtoon: '네이버웹툰', kyobo: '교보문고', kakao_webtoon: '카카오웹툰', kakaopage: '카카오페이지', munpia: '문피아', novelpia: '노벨피아' };
+    const labels = { series_db: '데이터베이스', ridi: '리디', naver: '네이버시리즈', naver_webtoon: '네이버웹툰', kyobo: '교보문고', yes24: '예스24', kakao_webtoon: '카카오웹툰', kakaopage: '카카오페이지', munpia: '문피아', novelpia: '노벨피아' };
     const selected = metadataSources;
     target.replaceChildren(...Object.entries(labels).filter(([key]) => {
       const kind = ({'소설':'novel','라노벨':'novel','라이트노벨':'novel','웹툰':'manhwa'})[contentKind] || contentKind;
@@ -1627,7 +1628,7 @@
   function renderMetadataHold() {
     const panel = $('[data-metadata-hold]');
     const candidates = Array.isArray(metadataHold?.candidates) ? metadataHold.candidates : [];
-    const sourceLabels = { ridi: '리디', naver: '네이버시리즈', kyobo: '교보문고',
+    const sourceLabels = { ridi: '리디', naver: '네이버시리즈', kyobo: '교보문고', yes24: '예스24',
       kakaopage: '카카오페이지', kakao_webtoon: '카카오웹툰',
       munpia: '문피아', novelpia: '노벨피아' };
     panel.hidden = !canEdit || metadataHold?.reason !== 'author_conflict';

@@ -85,6 +85,7 @@ for (const initial of ['ridi', '']) {
   assert.equal(blockFor('naver'), blockFor('naver_webtoon'));
   assert.equal(blockFor('naver').querySelectorAll('.rabbit-metadata-source-grip').length, 1);
   assert.ok(input('kakaopage'));
+  assert.ok(input('yes24'));
   assert.ok(input('kakao_webtoon'));
   assert.equal(blockFor('kakaopage'), blockFor('kakao_webtoon'));
   assert.equal(blockFor('kakaopage').querySelectorAll('.rabbit-metadata-source-grip').length, 1);

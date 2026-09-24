@@ -52,11 +52,17 @@
       <p>메타데이터가 비어 있는 신규 도서를 스캔 후 백그라운드에서 검색합니다. 파일명에 <code>연재</code>가 있으면 리디의 만화 연재 탭을 사용합니다.</p>
     </div>
 
+    <div class="rabbit-setting-panel">
+      <label class="rabbit-setting-label" for="rabbit-yes24-api-key">예스24 Open API 키</label>
+      <input id="rabbit-yes24-api-key" class="rabbit-setting-input" type="password" name="yes24_api_key" autocomplete="new-password" spellcheck="false" placeholder="yk_live_...">
+      <p><a href="https://developers.yes24.com/docs/apikey" target="_blank" rel="noopener noreferrer">예스24 개발자센터에서 API 키 발급</a> 후 입력하세요. 키가 없으면 예스24 검색은 건너뜁니다.</p>
+    </div>
+
     <div class="rabbit-metadata-source-fields-grid">
       <div class="rabbit-setting-panel rabbit-metadata-source-panel">
         <label class="rabbit-setting-label">검색 제공처 및 우선순위</label>
         <div id="rabbit-metadata-sources" class="rabbit-metadata-sources" aria-label="메타데이터 제공처 순서"></div>
-        <input type="hidden" name="metadata_sources" value="series_db,ridi,naver,naver_webtoon,kyobo,kakaopage,kakao_webtoon,munpia,novelpia">
+        <input type="hidden" name="metadata_sources" value="series_db,ridi,naver,naver_webtoon,kyobo,yes24,kakaopage,kakao_webtoon,munpia,novelpia">
         <p>손잡이를 끌어 순서를 바꾸고, 체크한 제공처만 검색합니다. 체크하지 않은 제공처는 검색하지 않습니다. 카카오페이지는 소설과 웹툰, 문피아·노벨피아는 소설, 네이버웹툰·카카오웹툰은 웹툰 유형에 사용됩니다.</p>
         <p>네이버시리즈·네이버웹툰과 카카오페이지·카카오웹툰은 각각 한 묶음으로 이동합니다. 각 묶음 안의 순서는 고정되며 제공처 활성화 여부는 각각 선택할 수 있습니다.</p>
         <p>위에 있을수록 우선순위가 높습니다. 정확히 맞는 후보만 선택하며, 선택된 제공처의 값은 우선순서대로 빈 필드를 보완합니다. 링크는 중복을 제거해 합칩니다.</p>

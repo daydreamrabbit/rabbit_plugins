@@ -182,7 +182,7 @@
   syncKindAvailability();
   if (sourceList && sourceInput && fieldInput) {
     const sourceLabels = {
-      series_db: '데이터베이스', ridi: '리디', naver: '네이버시리즈', naver_webtoon: '네이버웹툰', kyobo: '교보문고', kakaopage: '카카오페이지', kakao_webtoon: '카카오웹툰', munpia: '문피아', novelpia: '노벨피아',
+      series_db: '데이터베이스', ridi: '리디', naver: '네이버시리즈', naver_webtoon: '네이버웹툰', kyobo: '교보문고', yes24: '예스24', kakaopage: '카카오페이지', kakao_webtoon: '카카오웹툰', munpia: '문피아', novelpia: '노벨피아',
     };
     const sourceKeys = Object.keys(sourceLabels);
     const sourceGroups = [

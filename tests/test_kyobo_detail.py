@@ -10,6 +10,13 @@ class KyoboTests(unittest.TestCase):
   self.assertEqual(r['summary'],'첫 문단\n마지막 문단')
  def test_missing_fields_do_not_invent_metadata(self):
   self.assertEqual(m._kyobo_detail_metadata('<meta name="description" content="eBook 작품 | 소개...">'),{})
+ def test_ebook_introduction_ignores_expand_button(self):
+  page='''<div id="bookIntc"><div class="auto_overflow_contents">
+   <p>설명을 펼치기 전에 읽을 본문</p>
+   <button type="button" class="btn_more_body"><span>펼치기</span></button>
+   </div></div>'''
+  self.assertEqual(m._kyobo_detail_metadata(page)['summary'],
+                   '설명을 펼치기 전에 읽을 본문')
  def test_genre_from_product_categories(self):
   r=m._kyobo_detail_metadata('<input id="largeCtgrName" value="IT/프로그래밍"><input id="middleCtgrName" value="컴퓨터공학">')
   self.assertEqual(r['genre'],'IT/프로그래밍, 컴퓨터공학')

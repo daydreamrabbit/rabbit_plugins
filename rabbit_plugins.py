@@ -62,7 +62,7 @@ from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '3.1.1'
+PLUGIN_VERSION = '3.2.0'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -81,9 +81,10 @@ RELATION_FIELDS = {
     'other': 'relationships_other',
 }
 
-METADATA_SOURCES = ('series_db', 'ridi', 'naver', 'kyobo', *SOURCE_KINDS)
+METADATA_SOURCES = ('series_db', 'ridi', 'naver', 'kyobo', 'yes24', *SOURCE_KINDS)
 METADATA_SOURCE_LABELS = {
-    'series_db': '데이터베이스', 'ridi': '리디', 'naver': '네이버시리즈', 'kyobo': '교보문고',
+    'series_db': '데이터베이스', 'ridi': '리디', 'naver': '네이버시리즈',
+    'kyobo': '교보문고', 'yes24': '예스24',
     **SOURCE_LABELS,
 }
 METADATA_FIELDS = (
@@ -432,6 +433,11 @@ def _metadata_cover_eligible(row, webtoon, overwrite, source='', per_volume=Fals
         return False
     if webtoon:
         return True
+    # A PDF has a renderable first page, but BookOasis may not have generated
+    # its cover yet (for example after a remote or deferred scan). An external
+    # cover can fill that genuinely empty slot. Keep an existing cover intact.
+    if Path(str(row.get('file_path') or '')).suffix.casefold() == '.pdf':
+        return not row.get('cover_image')
     if source == 'ridi' and per_volume:
         # A remote archive is deliberately treated as having an internal
         # cover because checking it would open the remote file.  Ridi's
@@ -621,6 +627,8 @@ def _link_provider(value):
         return 'naver_webtoon'
     if host.endswith('kyobobook.co.kr'):
         return 'kyobo'
+    if host == 'yes24.com' or host.endswith('.yes24.com'):
+        return 'yes24'
     if host.endswith('kakao.com'):
         return 'kakao'
     if host.endswith('munpia.com'):
@@ -853,6 +861,8 @@ def _read_metadata_hold(gateway, library_id, series_name):
 
 def _metadata_date(value):
     text = str(value or '').strip()[:10].replace('.', '-').replace('/', '-')
+    if re.fullmatch(r'\d{8}', text):
+        text = f'{text[:4]}-{text[4:6]}-{text[6:]}'
     try:
         return date.fromisoformat(text).isoformat()
     except ValueError:
@@ -2020,6 +2030,50 @@ def _naver_search_cover(source, href):
     return value
 
 
+def _kyobo_search_cover(source, href):
+    """Find the image belonging to one Kyobo search result, not page og:image."""
+    product = re.search(r'/detail/([A-Za-z0-9]+)', str(href or ''), re.I)
+    if not product:
+        return ''
+    product_id = re.escape(product.group(1))
+    for match in re.finditer(
+            rf'<a\b(?=[^>]*href=["\'][^"\']*/detail/{product_id}(?:[?"\']))'
+            r'[^>]*>(.*?)</a>', str(source or ''), re.I | re.S):
+        image = re.search(r'<img\b[^>]*>', match.group(1), re.I | re.S)
+        if not image:
+            continue
+        attrs = dict((name.casefold(), html_lib.unescape(value)) for name, value in
+                     re.findall(r'([\w-]+)=["\']([^"\']*)["\']', image.group(0)))
+        for key in ('data-src', 'data-original', 'src'):
+            value = str(attrs.get(key) or '').strip()
+            if value and not re.search(r'(?:noimg|blank|transparent)', value, re.I):
+                image_url = urljoin('https://search.kyobobook.co.kr', value)
+                if urlparse(image_url).scheme in ('http', 'https'):
+                    return image_url
+        # Kyobo's image loader fills src in the browser from this ISBN field.
+        isbn = str(attrs.get('data-kbbfn-bid') or '').strip()
+        if re.fullmatch(r'\d{10}|\d{13}', isbn):
+            return f'https://contents.kyobobook.co.kr/sih/fit-in/300x0/pdt/{isbn}.jpg'
+    return ''
+
+
+def _ridi_search_cover(item, book, series, book_id):
+    """Use the result's cover, then Ridi's product-specific cover endpoint."""
+    for payload in (series, book, item):
+        for key in ('thumbnail', 'cover', 'bookDetailPageCover', 'cover_url', 'coverUrl', 'image'):
+            value = payload.get(key) if isinstance(payload, dict) else ''
+            if isinstance(value, dict):
+                value = next((value.get(size) for size in ('xxlarge', 'large', 'small')
+                              if value.get(size)), '')
+            if isinstance(value, str) and value.strip():
+                url = urljoin('https://ridibooks.com', value.strip())
+                if urlparse(url).scheme in ('http', 'https'):
+                    return url
+    if re.fullmatch(r'\d+', str(book_id or '')):
+        return f'https://img.ridicdn.net/cover/{book_id}/xxlarge#1'
+    return ''
+
+
 def _naver_variant_label(content_kind, title='', href=''):
     """Describe the Naver result's catalogue type beside its source."""
     kind = str(content_kind or '').strip().casefold()
@@ -2341,7 +2395,6 @@ def _remote_search_page(source, query, content_kind, book_type='', limit=8,
             if isinstance(authors, list):
                 authors = [author.get('name') if isinstance(author, dict) else author for author in authors]
             publication = book.get('publicationInfo') if isinstance(book.get('publicationInfo'), dict) else {}
-            thumbnail = series.get('thumbnail') if isinstance(series.get('thumbnail'), dict) else {}
             categories = book.get('categories') if isinstance(book.get('categories'), list) else []
             category_names = [
                 str(category.get('name') if isinstance(category, dict) else category)
@@ -2358,10 +2411,7 @@ def _remote_search_page(source, query, content_kind, book_type='', limit=8,
                 'author': _join_terms(authors),
                 'publisher': str(publication.get('name') or item.get('publisher') or '').strip(),
                 'genre': category_genres,
-                'cover': str(
-                    thumbnail.get('xxlarge') or thumbnail.get('large') or
-                    item.get('cover_url') or item.get('thumbnail') or item.get('image') or ''
-                ).strip(),
+                'cover': _ridi_search_cover(item, book, series, book_id),
             })
             if len(result) >= limit:
                 return result
@@ -2390,11 +2440,18 @@ def _remote_search_page(source, query, content_kind, book_type='', limit=8,
             continue
         title = _metadata_display_title(query, title)
         seen.add(href)
-        cover = parser.meta.get('og:image', '')
+        # The search page's og:image is a site-wide logo, not a product cover.
+        cover = ''
         variant_label = _ridi_variant_label(title, book_type=book_type) if source == 'ridi' else ''
         if source == 'naver':
-            cover = _naver_search_cover(response.text, href) or cover
+            cover = _naver_search_cover(response.text, href)
             variant_label = _naver_variant_label(content_kind, title, href)
+        elif source == 'kyobo':
+            cover = _kyobo_search_cover(response.text, href)
+        if not cover:
+            detail_cover = _remote_fetch_metadata(href, source).get('cover', '')
+            if not (source == 'kyobo' and '/resources/fo/images/common/' in detail_cover):
+                cover = detail_cover
         candidate = {
             'id': f'{source}:{hashlib.sha1(href.encode()).hexdigest()[:12]}',
             'title': title[:500], 'url': href, 'link': href,
@@ -2438,12 +2495,147 @@ def _remote_search(source, query, content_kind, book_type='', limit=8,
     return results[:limit]
 
 
+def _yes24_credits(value):
+    """Separate YES24's display suffixes from writer and illustrator names."""
+    writers = []
+    artists = []
+    for part in re.split(r'[,;|\n]+', str(value or '')):
+        name = _html_text(part)
+        if not name:
+            continue
+        match = re.fullmatch(r'(.+?)\s+(저|지음|글|공저|그림|역|옮김|감수|편저|편)', name)
+        if match:
+            name, role = match.groups()
+            if role == '그림':
+                artists.append(name)
+                continue
+            if role in ('역', '옮김', '감수', '편저', '편'):
+                continue
+        writers.append(name)
+    return _join_terms(writers), _join_terms(artists)
+
+
+def _yes24_public_summary(item_id):
+    """Read the public introduction when the official Goods API omits it."""
+    if not re.fullmatch(r'\d+', str(item_id or '')):
+        return ''
+    url = f'https://www.yes24.com/product/goods/{item_id}'
+    try:
+        import requests
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
+        response.raise_for_status()
+        if urlparse(getattr(response, 'url', url)).path != f'/product/goods/{item_id}':
+            return ''
+    except Exception as error:
+        print(f'[RabbitPlugins-Metadata] 예스24 공개 소개 조회 실패: {type(error).__name__}')
+        return ''
+    match = re.search(
+        r'<div\b[^>]*\bid=["\']infoset_introduce["\'][^>]*>'
+        r'.*?<textarea\b[^>]*\bclass=["\'][^"\']*\btxtContentText\b[^"\']*["\'][^>]*>'
+        r'(.*?)</textarea>', response.text, re.I | re.S)
+    if not match:
+        return ''
+    intro = html_lib.unescape(match.group(1))
+    intro = re.sub(r'<br\s*/?>', '\n', intro, flags=re.I)
+    intro = re.sub(r'<[^>]+>', ' ', intro)
+    intro = re.sub(r'[^\S\n]+', ' ', intro)
+    intro = re.sub(r'\n\s*\n+', '\n', intro).strip()
+    return _metadata_summary(intro[:20000])
+
+
+def _yes24_candidate_item_id(candidate):
+    value = str(candidate.get('id') or '')
+    match = re.fullmatch(r'yes24:(\d+)', value)
+    if match:
+        return match.group(1)
+    match = re.fullmatch(
+        r'https://www\.yes24\.com/product/goods/(\d+)',
+        str(candidate.get('url') or candidate.get('link') or ''))
+    return match.group(1) if match else ''
+
+
+def _yes24_search(query, content_kind, api_key, allow_partial=False, limit=8):
+    """Search the official YES24 Goods API without exposing its key in URLs."""
+    api_key = str(api_key or '').strip()
+    if not api_key:
+        return []
+    try:
+        import requests
+        response = requests.get(
+            'https://apis.yes24.com/v1/goods/itemList',
+            params={
+                'query': query,
+                'category': 'ALL' if content_kind == 'book' else 'EBOOK',
+                'page': 1, 'pageSize': 40, 'detail': 'Y',
+            },
+            headers={'X-Api-Key': api_key, 'Accept': 'application/json'},
+            timeout=12,
+        )
+        if response.status_code == 404:
+            return []
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get('success') is not True:
+            print('[RabbitPlugins-Metadata] 예스24 검색 응답 실패: '
+                  f'{str(payload.get("errorCode") or "invalid response") if isinstance(payload, dict) else "invalid response"}')
+            return []
+    except Exception as error:
+        print(f'[RabbitPlugins-Metadata] 예스24 검색 실패: {type(error).__name__}')
+        return []
+    data = payload.get('data') or {}
+    items = data.get('items') if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    results = []
+    seen = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get('itemId') or '').strip()
+        title = str(item.get('title') or '').strip()
+        if (not item_id.isdigit() or item_id in seen or len(title) < 2
+                or _metadata_variant_excluded(title)
+                or not _metadata_title_matches(query, title, allow_partial=allow_partial)):
+            continue
+        seen.add(item_id)
+        link = f'https://www.yes24.com/product/goods/{item_id}'
+        content = item.get('contentDetail') if isinstance(item.get('contentDetail'), dict) else {}
+        author, cover_artist = _yes24_credits(item.get('author'))
+        original_title = str(item.get('originalTitle') or '').strip()
+        cover = str(item.get('cover') or '').strip()
+        if urlparse(cover).scheme != 'https':
+            cover = ''
+        metadata = _metadata_clean({
+            'title': title,
+            'localized_series': original_title if _title_key(original_title) != _title_key(title) else '',
+            'author': author, 'cover_artist': cover_artist,
+            'publisher': item.get('publisher'),
+            'summary': content.get('bookIntroduction') or content.get('bookSummary') or '',
+            'cover': cover, 'isbn': item.get('isbn13') or item.get('isbn10'),
+            'release_date': item.get('publishDate'), 'link': link,
+            'books_lv': 'adult only' if str(item.get('adultYn') or '').upper() == 'Y' else '',
+        })
+        media_type = {'novel': '소설 e북', 'manga': '만화 e북',
+                      'manhwa': '웹툰', 'book': '도서'}.get(content_kind, '전자책')
+        results.append({
+            'id': f'yes24:{item_id}', 'title': title, 'url': link, 'link': link,
+            'source': 'yes24', 'source_label': METADATA_SOURCE_LABELS['yes24'],
+            'variant_label': media_type, 'author': metadata.get('author', ''),
+            'publisher': metadata.get('publisher', ''), 'cover': metadata.get('cover', ''),
+            'metadata': metadata, '_metadata_fetched': True,
+        })
+        if len(results) >= limit:
+            break
+    return results
+
+
 class _KyoboBookParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.values = {}
         self.depth = 0
         self.text = []
+        self.in_button = False
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
@@ -2454,15 +2646,19 @@ class _KyoboBookParser(HTMLParser):
                 self.depth += 1
             elif attrs.get('id') == 'bookIntc':
                 self.depth = 1
-        if self.depth and tag in ('br', 'p'):
+        if self.depth and tag == 'button':
+            self.in_button = True
+        if self.depth and not self.in_button and tag in ('br', 'p'):
             self.text.append('\n')
 
     def handle_endtag(self, tag):
+        if tag == 'button':
+            self.in_button = False
         if tag == 'div' and self.depth:
             self.depth -= 1
 
     def handle_data(self, data):
-        if self.depth:
+        if self.depth and not self.in_button:
             self.text.append(data)
 
 
@@ -2602,7 +2798,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         {'key': 'exclude_genres', 'label': '제외할 장르', 'type': 'text', 'default': ''},
         {'key': 'metadata_auto_enabled', 'label': '메타데이터 자동 수집', 'type': 'checkbox', 'default': False},
         {'key': 'novelpia_author_search_url', 'label': '노벨피아 작가 보조 검색 URL (선택)', 'type': 'text', 'default': ''},
-        {'key': 'metadata_sources', 'label': '메타데이터 제공처 우선순위', 'type': 'text', 'default': 'series_db,ridi,naver,naver_webtoon,kyobo,kakaopage,kakao_webtoon,munpia,novelpia'},
+        {'key': 'metadata_sources', 'label': '메타데이터 제공처 우선순위', 'type': 'text', 'default': 'series_db,ridi,naver,naver_webtoon,kyobo,yes24,kakaopage,kakao_webtoon,munpia,novelpia'},
+        {'key': 'yes24_api_key', 'label': '예스24 Open API 키', 'type': 'password', 'default': ''},
         {'key': 'metadata_fields', 'label': '자동으로 가져올 필드', 'type': 'text', 'default': 'title,localized_series,author,cover_artist,publisher,genre,tags,release_date,isbn,link,cover'},
         {'key': 'metadata_genre_map', 'label': '장르 변환', 'type': 'text', 'default': ''},
         {'key': 'metadata_publisher_map', 'label': '출판사 변환', 'type': 'text', 'default': ''},
@@ -2730,6 +2927,15 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         content_kind = _metadata_content_kind(
             content_kind or ('novel' if db_type == 'adult' else 'manga'))
         book_type = _metadata_book_type_value(book_type)
+        yes24_api_key = str(config.get('yes24_api_key') or '').strip()
+        if not yes24_api_key and db_type != 'general' and 'yes24' in _metadata_source_order(config):
+            # Plugin management saves its settings in the general DB; the
+            # adult detail view can reuse that key without copying it to a
+            # second library database.
+            try:
+                yes24_api_key = str((self.get_plugin_config('general', {}) or {}).get('yes24_api_key') or '').strip()
+            except Exception:
+                yes24_api_key = ''
         # Candidate filtering and media-type labels are part of the result
         # shape; invalidate older cached cards that may contain description
         # rows from the unfiltered Ridi response.
@@ -2738,11 +2944,12 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         # are not cached so a later scan can retry the provider immediately.
         # Manual and automatic searches have different title matching rules,
         # so they must never share a cache entry.
-        cache_key = 'metadata-search:v25:' + hashlib.sha256(
+        cache_key = 'metadata-search:v26:' + hashlib.sha256(
             json.dumps([
                 query, content_kind, book_type,
                 _metadata_source_order(config), bool(manual), ebook_code, author_hint,
                 config.get("novelpia_author_search_url", ""),
+                hashlib.sha256(yes24_api_key.encode()).hexdigest(),
             ], ensure_ascii=False).encode()
         ).hexdigest()
         # Manual searches must query every selected provider on every submit.
@@ -2811,6 +3018,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                             print(f'[RabbitPlugins-Metadata] novelpia 작가 보조 검색 실패: {type(error).__name__}')
             elif source == 'series_db':
                 candidates = self._series_db_search(query, content_kind)
+            elif source == 'yes24':
+                candidates = _yes24_search(
+                    query, content_kind, yes24_api_key,
+                    allow_partial=bool(manual))
             elif source == 'kyobo' and ebook_code:
                 direct = _kyobo_code_candidate(query, ebook_code)
                 candidates = [direct] if direct else []
@@ -3112,6 +3323,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         for candidate in candidates:
             values = candidate.get('metadata') or candidate
             source = str(candidate.get('source') or '').strip().casefold()
+            if source == 'yes24' and not values.get('summary') and not merged.get('summary'):
+                values = dict(values)
+                values['summary'] = _yes24_public_summary(
+                    _yes24_candidate_item_id(candidate))
             if candidate.get('source') in ('ridi', 'naver', 'kyobo') and candidate.get('url'):
                 fetched = (
                     values if candidate.get('_metadata_fetched')
@@ -3420,6 +3635,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 raw_metadata['link'] = _join_links(
                     local_metadata.get('link'), raw_metadata.get('link'), item_data.get('url'))
         metadata = _metadata_clean(raw_metadata)
+        if item_source == 'yes24' and not metadata.get('summary'):
+            summary = _yes24_public_summary(_yes24_candidate_item_id(item_data))
+            if summary:
+                metadata['summary'] = summary
         if item_source == 'series_db':
             # A manual Series.db result may still contain legacy top-level fields
             # from a cached browser response. Never use those to rename a series.

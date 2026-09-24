@@ -66,6 +66,13 @@ class CoverPolicyTests(unittest.TestCase):
         self.assertTrue(m._metadata_cover_eligible({'file_path':'book.txt'},False,False))
         self.assertFalse(m._metadata_cover_eligible({'file_path':'unavailable.cbz'},False,True))
 
+    def test_pdf_without_generated_cover_can_use_external(self):
+        row = {'file_path': '/books/서버 관리자.pdf', 'cover_image': None}
+        self.assertTrue(m._metadata_cover_eligible(row, False, False))
+        row['cover_image'] = 'internal.webp'
+        self.assertFalse(m._metadata_cover_eligible(row, False, False))
+        self.assertFalse(m._metadata_cover_eligible(row, False, True))
+
     def test_webtoon_includes_existing_covers_but_respects_locks(self):
         row={'file_path':'book.cbz','cover_image':'old.webp'}
         self.assertTrue(m._metadata_cover_eligible(row,True,False))
