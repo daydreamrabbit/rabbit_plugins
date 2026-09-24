@@ -78,6 +78,7 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(row['metadata']['isbn'], '9788966260959')
         self.assertEqual(row['metadata']['release_date'], '2013-12-24')
         self.assertEqual(row['metadata']['author'], '로버트 C. 마틴')
+        self.assertEqual(row['metadata']['genre'], 'IT 모바일')
         self.assertNotIn('books_lv', row['metadata'])
         self.assertEqual(get.call_args.args[0], 'https://apis.yes24.com/v1/goods/itemList')
         self.assertEqual(get.call_args.kwargs['headers']['X-Api-Key'], 'private-key')
@@ -159,6 +160,19 @@ class ProviderTests(unittest.TestCase):
                 {'goodsType': 'eBook', 'goodsSortNm': category}), '')
         self.assertEqual(m._yes24_item_kind(
             {'goodsType': 'eBook', 'goodsSortNm': 'ebook-만화-스포츠'}), 'manga')
+        for category, expected in (
+            ('ebook-판타지', '웹소설, 판타지'),
+            ('ebook-로맨스-현대물', '웹소설, 로맨스, 현대물'),
+            ('ebook-BL-소설', '웹소설, BL, 소설'),
+            ('ebook-웹소설', '웹소설'),
+            ('ebook-라이트노벨', '라이트노벨'),
+            ('eBook-컴퓨터와인터넷-IT 전문서', '컴퓨터와인터넷, IT 전문서'),
+            ('ebook-만화-스포츠', '만화, 스포츠'),
+        ):
+            with self.subTest(genre_category=category):
+                item = {'goodsType': 'eBook', 'goodsSortNm': category}
+                self.assertEqual(m._yes24_genres(
+                    item, m._yes24_item_kind(item), 'single'), expected)
 
     def test_yes24_episode_and_volume_editions(self):
         items = [
@@ -177,6 +191,8 @@ class ProviderTests(unittest.TestCase):
             volume = m._yes24_search('하멜른의 영주', 'novel', 'key', edition='single')
         self.assertEqual([row['variant_label'] for row in both],
                          ['소설 e북', '웹소설', '소설 e북'])
+        self.assertEqual([row['metadata']['genre'] for row in both],
+                         ['웹소설, 판타지', '웹소설, 판타지', '웹소설, 판타지'])
         self.assertEqual([row['id'] for row in serial], ['yes24:35838841'])
         self.assertEqual([row['id'] for row in volume],
                          ['yes24:107847473', 'yes24:111680764'])
@@ -222,18 +238,24 @@ class ProviderTests(unittest.TestCase):
         page = '''<div id="infoset_introduce" class="gd_infoSet">
           <h4>소개</h4><textarea class="txtContentText">
           첫 문단&lt;br/&gt;둘째 문단<br/>마지막 문단</textarea></div>
-          <div id="infoset_author">다른 설명</div>'''
+          <div id="infoset_tagList"><div id="tagArea" class="gd_tagArea">
+            <span data-hashTagNm="통쾌함"><a>#통쾌함</a></span>
+            <span data-hashTagNm="성장물"><a>#성장물</a></span>
+          </div></div><div id="infoset_author">다른 설명</div>'''
         response = SimpleNamespace(text=page, url='https://www.yes24.com/product/goods/139753162',
                                    raise_for_status=lambda: None)
         with patch('requests.get', return_value=response) as get:
-            summary = m._yes24_public_summary('139753162')
+            details = m._yes24_public_metadata('139753162')
+        summary = details['summary']
         self.assertEqual(summary, '첫 문단\n둘째 문단\n마지막 문단')
+        self.assertEqual(details['tags'], '통쾌함, 성장물')
         self.assertEqual(get.call_args.args[0], 'https://www.yes24.com/product/goods/139753162')
         row = {'id': 'yes24:139753162', 'source': 'yes24', 'title': '1시간만에 서버 관리자 되기',
                'metadata': {'title': '1시간만에 서버 관리자 되기', 'author': '정복문'}}
-        with patch.object(m, '_yes24_public_summary', return_value=summary) as fetch:
+        with patch.object(m, '_yes24_public_metadata', return_value=details) as fetch:
             merged = self.provider()._merge_metadata_candidates([row], 'book')
         self.assertEqual(merged['metadata']['summary'], summary)
+        self.assertEqual(merged['metadata']['tags'], '통쾌함, 성장물')
         fetch.assert_called_once_with('139753162')
         self.assertEqual(m._yes24_credits('정복문 저')[0], '정복문')
 

@@ -62,7 +62,7 @@ from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '3.2.1'
+PLUGIN_VERSION = '3.2.2'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -96,11 +96,17 @@ METADATA_COVER_KIND_PATTERN = re.compile(r'^[a-z][a-z0-9_-]{0,23}$')
 YES24_NOVEL_SECTIONS = frozenset({
     # eBook>판타지/무협 (017001049), eBook>로맨스 (017001046),
     # eBook>라이트노벨 (017001063). goodsSortNm can omit the parent label.
-    '판타지/무협', '판타지', '퓨전', '현대', '게임', '스포츠', '대체역사', '무협',
+    '웹소설', '판타지/무협', '판타지', '퓨전', '현대', '게임', '스포츠', '대체역사', '무협',
     '로맨스', '현대물', '역사/시대물', 'tl/삽화소설', '할리퀸', '로맨틱판타지',
     '라이트노벨', '시프트노벨', 'nt 노벨', 'l노벨', '노블엔진', '시드노벨',
     's노벨', 'ak novel', '길찾기', '나이트노벨', '노블오즈', '익스트림노벨',
     '제이노블', '기타 라이트노벨',
+})
+YES24_WEB_NOVEL_SECTIONS = frozenset({
+    # Serialized fiction is also sold as unnumbered or per-volume e-books.
+    '웹소설', '판타지/무협', '판타지', '퓨전', '현대', '게임', '스포츠',
+    '대체역사', '무협', '로맨스', '현대물', '역사/시대물', 'bl',
+    'tl/삽화소설', '할리퀸', '로맨틱판타지',
 })
 
 # Scanner hooks can be delivered by more than one background thread (the
@@ -2526,32 +2532,45 @@ def _yes24_credits(value):
     return _join_terms(writers), _join_terms(artists)
 
 
-def _yes24_public_summary(item_id):
-    """Read the public introduction when the official Goods API omits it."""
+def _yes24_public_metadata(item_id):
+    """Read the public introduction and product tags omitted by the Goods API."""
     if not re.fullmatch(r'\d+', str(item_id or '')):
-        return ''
+        return {}
     url = f'https://www.yes24.com/product/goods/{item_id}'
     try:
         import requests
         response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
         response.raise_for_status()
         if urlparse(getattr(response, 'url', url)).path != f'/product/goods/{item_id}':
-            return ''
+            return {}
     except Exception as error:
-        print(f'[RabbitPlugins-Metadata] 예스24 공개 소개 조회 실패: {type(error).__name__}')
-        return ''
+        print(f'[RabbitPlugins-Metadata] 예스24 공개 상세 조회 실패: {type(error).__name__}')
+        return {}
     match = re.search(
         r'<div\b[^>]*\bid=["\']infoset_introduce["\'][^>]*>'
         r'.*?<textarea\b[^>]*\bclass=["\'][^"\']*\btxtContentText\b[^"\']*["\'][^>]*>'
         r'(.*?)</textarea>', response.text, re.I | re.S)
-    if not match:
-        return ''
-    intro = html_lib.unescape(match.group(1))
-    intro = re.sub(r'<br\s*/?>', '\n', intro, flags=re.I)
-    intro = re.sub(r'<[^>]+>', ' ', intro)
-    intro = re.sub(r'[^\S\n]+', ' ', intro)
-    intro = re.sub(r'\n\s*\n+', '\n', intro).strip()
-    return _metadata_summary(intro[:20000])
+    intro = ''
+    if match:
+        intro = html_lib.unescape(match.group(1))
+        intro = re.sub(r'<br\s*/?>', '\n', intro, flags=re.I)
+        intro = re.sub(r'<[^>]+>', ' ', intro)
+        intro = re.sub(r'[^\S\n]+', ' ', intro)
+        intro = re.sub(r'\n\s*\n+', '\n', intro).strip()
+    tag_area = re.search(
+        r'<div\b[^>]*\bid=["\']infoset_tagList["\'][^>]*>'
+        r'.*?<div\b[^>]*\bid=["\']tagArea["\'][^>]*>(.*?)</div>',
+        response.text, re.I | re.S)
+    tags = re.findall(r'data-hashTagNm=["\']([^"\']+)["\']',
+                      tag_area.group(1), re.I) if tag_area else []
+    return _metadata_clean({
+        'summary': _metadata_summary(intro[:20000]),
+        'tags': _join_terms([html_lib.unescape(tag) for tag in tags]),
+    })
+
+
+def _yes24_public_summary(item_id):
+    return _yes24_public_metadata(item_id).get('summary', '')
 
 
 def _yes24_candidate_item_id(candidate):
@@ -2597,6 +2616,20 @@ def _yes24_item_kind(item):
                    '대여', 'gl'}:
         return ''
     return 'book'
+
+
+def _yes24_genres(item, item_kind, item_edition):
+    """Use the product's catalogue path as genres, without its store label."""
+    parts = [part.strip() for part in re.split(r'\s*[-＞>]\s*',
+             str(item.get('goodsSortNm') or '')) if part.strip()]
+    categories = [part for part in parts[1:]
+                  if part.casefold() not in {'ebook', '무료ebook', '국내도서',
+                                             '외국도서', '대여', '소장'}]
+    if item_kind == 'novel' and (item_edition == 'series' or any(
+            category.casefold() in YES24_WEB_NOVEL_SECTIONS
+            for category in categories)):
+        categories.insert(0, '웹소설')
+    return _join_terms(categories)
 
 
 def _yes24_edition(title):
@@ -2682,6 +2715,7 @@ def _yes24_search(query, content_kind, api_key, allow_partial=False, limit=8,
             'author': author, 'cover_artist': cover_artist,
             'publisher': item.get('publisher'),
             'summary': content.get('bookIntroduction') or content.get('bookSummary') or '',
+            'genre': _yes24_genres(item, item_kind, item_edition),
             'cover': cover, 'isbn': item.get('isbn13') or item.get('isbn10'),
             'release_date': item.get('publishDate'), 'link': link,
             'books_lv': 'adult only' if str(item.get('adultYn') or '').upper() == 'Y' else '',
@@ -3021,7 +3055,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         # are not cached so a later scan can retry the provider immediately.
         # Manual and automatic searches have different title matching rules,
         # so they must never share a cache entry.
-        cache_key = 'metadata-search:v30:' + hashlib.sha256(
+        cache_key = 'metadata-search:v32:' + hashlib.sha256(
             json.dumps([
                 query, content_kind, book_type,
                 _metadata_source_order(config), bool(manual), ebook_code, author_hint,
@@ -3404,10 +3438,14 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         for candidate in candidates:
             values = candidate.get('metadata') or candidate
             source = str(candidate.get('source') or '').strip().casefold()
-            if source == 'yes24' and not values.get('summary') and not merged.get('summary'):
+            if source == 'yes24' and (
+                    (not values.get('summary') and not merged.get('summary'))
+                    or (not values.get('tags') and not merged.get('tags'))):
                 values = dict(values)
-                values['summary'] = _yes24_public_summary(
-                    _yes24_candidate_item_id(candidate))
+                details = _yes24_public_metadata(_yes24_candidate_item_id(candidate))
+                for field in ('summary', 'tags'):
+                    if details.get(field) and not values.get(field):
+                        values[field] = details[field]
             if candidate.get('source') in ('ridi', 'naver', 'kyobo') and candidate.get('url'):
                 fetched = (
                     values if candidate.get('_metadata_fetched')
@@ -3716,10 +3754,11 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 raw_metadata['link'] = _join_links(
                     local_metadata.get('link'), raw_metadata.get('link'), item_data.get('url'))
         metadata = _metadata_clean(raw_metadata)
-        if item_source == 'yes24' and not metadata.get('summary'):
-            summary = _yes24_public_summary(_yes24_candidate_item_id(item_data))
-            if summary:
-                metadata['summary'] = summary
+        if item_source == 'yes24' and (not metadata.get('summary') or not metadata.get('tags')):
+            details = _yes24_public_metadata(_yes24_candidate_item_id(item_data))
+            for field in ('summary', 'tags'):
+                if details.get(field) and not metadata.get(field):
+                    metadata[field] = details[field]
         if item_source == 'series_db':
             # A manual Series.db result may still contain legacy top-level fields
             # from a cached browser response. Never use those to rename a series.
