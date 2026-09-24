@@ -1,4 +1,6 @@
 import unittest
+import json
+from types import SimpleNamespace
 from unittest.mock import patch
 from .. import rabbit_plugins as m
 
@@ -90,6 +92,28 @@ class AutoIdentityTests(unittest.TestCase):
   self.assertEqual(r['release_date'],'2016-05-30')
   self.assertEqual(r['publication_start_date'],'2016-05-30')
   self.assertNotIn('publication_end_date',r)
+ def test_ridi_novel_ebook_categories_and_webnovel_genre(self):
+  self.assertFalse(m._metadata_title_matches(
+   '전설의 기사 아크리안','전설의 기사',allow_partial=True))
+  for category in ('판타지 e북','로맨스 e북','로판 e북','BL 소설 e북'):
+   book={'categories':[{'name':category}]}
+   self.assertTrue(m._ridi_book_type_allowed('novel','전설의 기사 아크리안',book,{}),category)
+   self.assertEqual(m._ridi_variant_label('작품',book,{},'novel'),'소설 e북')
+  self.assertFalse(m._ridi_book_type_allowed(
+   'novel','작품',{'categories':[{'name':'만화 e북'}]},{}))
+  def search_card(category):
+   return {'id':'123000264','book':{'title':{'main':'전설의 기사 아크리안 1권'},
+    'series':{'title':'전설의 기사 아크리안'},
+    'categories':[{'name':category}]}}
+  for category,expected in [('판타지 e북','판타지 e북'),
+                            ('판타지 웹소설','웹소설, 판타지 웹소설')]:
+   html='<script id="__NEXT_DATA__" type="application/json">'+json.dumps(
+    {'props':{'books':[search_card(category)]}},ensure_ascii=False)+'</script>'
+   response=SimpleNamespace(text=html,raise_for_status=lambda:None)
+   with patch('requests.get',return_value=response):
+    results=m._remote_search_page('ridi','전설의 기사 아크리안','novel','novel')
+   self.assertEqual(len(results),1,category)
+   self.assertEqual(results[0]['genre'],expected)
  def test_absent_flags_not_assumed_everyone_or_ongoing(self):
   with patch.object(m,'_inline_json_object',return_value={}):self.assertEqual(m._ridi_publication_metadata(''),{})
  def test_overwrite_kind_targets_rows_even_when_metadata_is_complete(self):
@@ -143,5 +167,49 @@ class AutoIdentityTests(unittest.TestCase):
  def test_selected_product_genre_replaces_stale_variant(self):
   merged=m._merge_variant_genres('만화 e북, 19+','해외 순정, 만화 연재, 성인')
   self.assertEqual(merged,'만화 e북, 19+, 해외 순정, 성인')
+
+ def test_new_final_file_refreshes_only_completion_fields(self):
+  m._COMPLETION_SCAN_MARKERS.clear()
+  class Gateway:
+   def __init__(self):
+    self.updates=[];self.settings={}
+   def fetch_all(self,query,params=()):
+    if 'ORDER BY id DESC LIMIT ?' in query:
+     return [{'id':12,'series_name':'작품','title':'작품 02권 (완결)',
+              'file_path':'/books/작품 02권 (완결).epub'}]
+    if 'publication_status, tags, metadata_locked' in query:
+     return [
+      {'id':11,'title':'작품 01권','file_path':'/books/작품 01권.epub',
+       'publication_status':'0','tags':'기존','metadata_locked':0},
+      {'id':12,'title':'작품 02권 (완결)','file_path':'/books/작품 02권 (완결).epub',
+       'publication_status':'0','tags':'기존','metadata_locked':0}]
+    return []
+   def fetch_one(self,query,params=()):return {'content_kind':'manga'}
+   def execute(self,query,params=()):self.updates.append((query,params));return 1
+   def get_setting(self,key,default=None):return self.settings.get(key,default)
+   def set_setting(self,key,value):self.settings[key]=value
+  gateway=Gateway();provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  provider.get_plugin_config=lambda *_:{'metadata_overwrite':True,
+   'metadata_overwrite_kinds':'manga'}
+  provider.get_db_gateway=lambda *_:gateway
+  provider._search_metadata=lambda *args,**kwargs:[{'source':'ridi','title':'작품'}]
+  provider._select_auto_candidates=lambda *args,**kwargs:[{'source':'ridi','title':'작품'}]
+  provider._merge_metadata_candidates=lambda *args,**kwargs:{'metadata':{
+   'publication_status':'2','publication_end_date':'2026-09-24','tags':'기존, 완결태그',
+   'author':'다른 작가','summary':'다른 소개','cover':'https://example.com/cover'}}
+  with patch.object(m,'_optional_column_sql',return_value='NULL'):
+   first=provider._auto_collect('general',{'library_id':4,'new_books_count':1,
+    '_rabbit_allow_overwrite':False})
+   second=provider._auto_collect('general',{'library_id':4,'new_books_count':1,
+    '_rabbit_allow_overwrite':True})
+  self.assertEqual(first['updated'],0)
+  self.assertEqual(second['updated'],3)
+  self.assertEqual(len(gateway.updates),2)
+  self.assertTrue(all('publication_status' in sql and 'tags' in sql
+                      and 'author' not in sql and 'summary' not in sql
+                      and 'cover' not in sql for sql,_ in gateway.updates))
+  self.assertTrue(all('기존, 완결태그' in params for _,params in gateway.updates))
+  self.assertIn('2026-09-24',next(iter(gateway.settings.values())))
+  m._COMPLETION_SCAN_MARKERS.clear()
  def test_join_terms_flattens_and_deduplicates_lists(self):
   self.assertEqual(m._join_terms(['현대배경, 회사','회사, 일상']),'현대배경, 회사, 일상')

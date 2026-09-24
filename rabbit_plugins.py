@@ -51,6 +51,7 @@ import threading
 import time
 import unicodedata
 import zipfile
+from collections import deque
 from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -61,7 +62,7 @@ from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '3.1.0'
+PLUGIN_VERSION = '3.1.1'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -98,6 +99,7 @@ METADATA_COVER_KIND_PATTERN = re.compile(r'^[a-z][a-z0-9_-]{0,23}$')
 # remote-provider work.  The lock is process-local, which is sufficient for a
 # single BookOasis worker and avoids starting a second nested daemon thread.
 _AUTO_COLLECT_LOCK = threading.Lock()
+_COMPLETION_SCAN_MARKERS = deque(maxlen=512)
 _COVER_PREFERENCE_LOCK = threading.Lock()
 _COVER_RECONCILE_START_LOCK = threading.Lock()
 _COVER_RECONCILE_STARTED = False
@@ -1093,8 +1095,7 @@ def _metadata_title_matches(query, candidate_title, allow_partial=False):
     # Manual searches may intentionally use a shortened work title.  Keep
     # automatic collection exact, while allowing an entered title prefix (or
     # a provider's longer canonical title) in the manual result list.
-    return bool(allow_partial and (
-        query_key in candidate_key or candidate_key in query_key))
+    return bool(allow_partial and query_key in candidate_key)
 
 
 def _metadata_candidate_variant_label(candidate, content_kind, book_type=''):
@@ -2154,6 +2155,14 @@ def _ridi_variant_label(title='', book=None, item=None, book_type=''):
                 for category in categories if category
             )
     text = ' '.join(values).casefold()
+    if kind == 'novel':
+        if '라이트노벨' in text or '라노벨' in text:
+            return '라이트노벨'
+        if '웹소설' in text:
+            return '웹소설'
+        if 'e북' in text or '전자책' in text or '단행본' in text:
+            return '소설 e북'
+        return '소설'
     if '웹툰' in text:
         return '웹툰'
     if '웹소설' in text:
@@ -2197,14 +2206,17 @@ def _ridi_book_type_allowed(book_type, title='', book=None, item=None):
             if value:
                 values.append(str(value))
     text = ' '.join(values + category_values).casefold()
-    has_novel = bool(re.search(r'웹소설|라이트노벨|라노벨|소설', text))
+    # Ridi files Korean fantasy, romance and martial-arts e-books under the
+    # WEBNOVEL catalogue, but their category names need not contain "소설".
+    novel_category = r'웹소설|라이트노벨|라노벨|소설|(?:판타지|로맨스|로판|무협|BL)\s*e북'
+    has_novel = bool(re.search(novel_category, text, re.I))
     has_comic = bool(re.search(r'만화|웹툰', text))
     if category_values:
         # Ridi's mixed search response can include a comic edition even on
-        # the WEBNOVEL page. Category names are the reliable discriminator;
-        # a generic "판타지 e북" entry must not pass as a novel.
+        # the WEBNOVEL page. Keep comics out while admitting fantasy e-books.
         category_text = ' '.join(category_values).casefold()
-        return bool(re.search(r'웹소설|라이트노벨|라노벨|소설', category_text))
+        return bool(re.search(novel_category, category_text, re.I)) and not bool(
+            re.search(r'만화|웹툰', category_text))
     return not has_comic or has_novel
 
 
@@ -2331,6 +2343,13 @@ def _remote_search_page(source, query, content_kind, book_type='', limit=8,
             publication = book.get('publicationInfo') if isinstance(book.get('publicationInfo'), dict) else {}
             thumbnail = series.get('thumbnail') if isinstance(series.get('thumbnail'), dict) else {}
             categories = book.get('categories') if isinstance(book.get('categories'), list) else []
+            category_names = [
+                str(category.get('name') if isinstance(category, dict) else category)
+                for category in categories if category
+            ]
+            category_genres = _join_terms(
+                (['웹소설'] if any('웹소설' in name for name in category_names) else [])
+                + category_names)
             seen.add(href)
             result.append({
                 'id': f'ridi:{book_id}', 'title': title[:500], 'url': href, 'link': href,
@@ -2338,10 +2357,7 @@ def _remote_search_page(source, query, content_kind, book_type='', limit=8,
                 'variant_label': _ridi_variant_label(title, book, item, book_type),
                 'author': _join_terms(authors),
                 'publisher': str(publication.get('name') or item.get('publisher') or '').strip(),
-                'genre': _join_terms([
-                    category.get('name') if isinstance(category, dict) else category
-                    for category in categories
-                ]),
+                'genre': category_genres,
                 'cover': str(
                     thumbnail.get('xxlarge') or thumbnail.get('large') or
                     item.get('cover_url') or item.get('thumbnail') or item.get('image') or ''
@@ -2523,6 +2539,10 @@ def _remote_fetch_metadata(url, source):
         hashtag_text = re.findall(r'#([^\s,#]+)', str((parser.meta.get('description') if source == 'naver' else metadata.get('summary')) or ''))
         if keyword_text or hashtag_text:
             metadata['tags'] = keyword_text or ', '.join(hashtag_text)
+        if source == 'ridi' and any(
+                '웹소설' in str(value or '')
+                for value in (metadata.get('genre'), metadata.get('tags'))):
+            metadata['genre'] = _join_terms(['웹소설', metadata.get('genre')])
         if source == 'naver':
             metadata['tags'] = _metadata_remove_terms(metadata.get('tags', ''), 'NOVEL, COMIC, WEBTOON')
         result = _metadata_clean(metadata)
@@ -2695,7 +2715,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         return self._apply_metadata(gateway, book_id, item_data or {}, config, manual=True)
 
     def _search_metadata(self, query, config, db_type='general', content_kind=None,
-                         book_type='', manual=False, ebook_code='', author_hint=''):
+                         book_type='', manual=False, ebook_code='', author_hint='', refresh=False):
         ebook_code = _metadata_ebook_code(ebook_code or query)
         query, query_author = _metadata_book_folder_identity(query, content_kind)
         author_hint = author_hint or query_author
@@ -2729,7 +2749,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         # Caching a successful Naver response while Ridi is temporarily
         # unreachable makes the missing Ridi card look permanent for the next
         # five minutes, even after the provider is reachable again.
-        if not manual:
+        if not manual and not refresh:
             try:
                 cached = self.cache_get(cache_key)
                 if cached:
@@ -2829,7 +2849,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             results = self._combine_naver_candidates(results, book_type)
         if 'kakaopage' in source_order and 'kakao_webtoon' in source_order:
             results = self._combine_kakao_candidates(results)
-        if results and not manual:
+        if results and not manual and not refresh:
             try:
                 self.cache_set(cache_key, json.dumps(results, ensure_ascii=False), ttl=300)
             except Exception:
@@ -3011,6 +3031,12 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                             # result has their full names. Keep those names
                             # for both identity checks and saved metadata.
                             detail['author'] = search_author
+                        if source == 'ridi' and '웹소설' in str(
+                                (candidate.get('metadata') or {}).get('genre') or ''):
+                            # Search-card categories identify the precise
+                            # edition. A detail page can expose the adjacent
+                            # e-book category instead of the serial one.
+                            detail['genre'] = (candidate.get('metadata') or {}).get('genre')
                         candidate['metadata'] = {**(candidate.get('metadata') or candidate),
                                                  **{k: v for k, v in detail.items() if v}}
                         candidate['_metadata_fetched'] = True
@@ -3831,12 +3857,123 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             gateway.set_setting(_metadata_hold_key(target['library_id'], target['series_name']), '')
         return True, f'메타데이터 {len(updated_ids)}권에 적용했습니다.'
 
+    def _refresh_newly_completed_series(self, gateway, db_type, payload, config, source_order,
+                                        do_refresh=True):
+        """Refresh only mutable completion fields when a new final file arrives.
+
+        The core scan hook supplies a count and the first ten titles, not book
+        IDs. Newly inserted books have the highest IDs in their library, so
+        inspect exactly that many rows and require an older ongoing sibling.
+        """
+        try:
+            new_count = int(payload.get('new_books_count') or 0)
+            library_id = int(payload.get('library_id') or 0)
+        except (TypeError, ValueError):
+            return set(), 0
+        if new_count < 1 or library_id < 1:
+            return set(), 0
+        new_rows = gateway.fetch_all(
+            'SELECT id, series_name, title, file_path FROM books '
+            'WHERE library_id = ? AND COALESCE(is_deleted, 0) = 0 '
+            'ORDER BY id DESC LIMIT ?', (library_id, new_count))
+        final_series = {
+            str(row.get('series_name') or '').strip() for row in new_rows
+            if re.search(r'\(\s*완결\s*\)|（\s*완결\s*）',
+                         os.path.basename(str(row.get('file_path') or '').replace('\\', '/')),
+                         re.IGNORECASE)
+            and str(row.get('series_name') or '').strip()
+        }
+        if not final_series:
+            return set(), 0
+
+        library = gateway.fetch_one('SELECT content_kind FROM libraries WHERE id = ?',
+                                    (library_id,)) or {}
+        content_kind = str(library.get('content_kind') or 'manga')
+        new_ids = {row['id'] for row in new_rows}
+        handled = set()
+        changed = 0
+        for series in sorted(final_series):
+            books = gateway.fetch_all(
+                'SELECT id, title, file_path, publication_status, tags, metadata_locked '
+                'FROM books WHERE library_id = ? AND series_name = ? '
+                'AND COALESCE(is_deleted, 0) = 0 ORDER BY id',
+                (library_id, series))
+            marker_ids = [row['id'] for row in new_rows if row.get('series_name') == series]
+            already_handled = any((db_type, library_id, marker_id) in _COMPLETION_SCAN_MARKERS
+                                  for marker_id in marker_ids)
+            ongoing_sibling = any(
+                row['id'] not in new_ids
+                and str(row.get('publication_status') or '').strip() == '0'
+                for row in books)
+            if not ongoing_sibling and not already_handled:
+                continue
+            handled.add(series)
+            if not do_refresh or already_handled:
+                continue
+            if any(row['id'] not in new_ids
+                   and str(row.get('publication_status') or '').strip() == '0'
+                   and int(row.get('metadata_locked') or 0) == 1
+                   for row in books):
+                print(f'[RabbitPlugins-Metadata] 완결 갱신 보류, 기존 연재 도서 잠금: {series!r}')
+                continue
+            for marker_id in marker_ids:
+                _COMPLETION_SCAN_MARKERS.append((db_type, library_id, marker_id))
+            search_title, author_hint = _metadata_book_folder_identity(series, content_kind)
+            book_type = _metadata_book_type(
+                content_kind, books[0].get('title'),
+                ' '.join(os.path.basename(str(row.get('file_path') or '').replace('\\', '/'))
+                         for row in books))
+            candidates = self._search_metadata(
+                search_title, config, db_type, content_kind, book_type,
+                author_hint=author_hint, refresh=True)
+            selected = self._select_auto_candidates(
+                candidates, search_title, content_kind, book_type, source_order,
+                author_hint=author_hint)
+            if not selected:
+                continue
+            metadata = _metadata_clean(
+                (self._merge_metadata_candidates(selected, content_kind) or {}).get('metadata') or {})
+            if metadata.get('publication_status') != '2':
+                print(f'[RabbitPlugins-Metadata] 완결 파일 감지, 제공처 완결 미확인: {series!r}')
+                continue
+            end_date = metadata.get('publication_end_date') or ''
+            incoming_tags = metadata.get('tags') or ''
+            for row in books:
+                if int(row.get('metadata_locked') or 0) == 1:
+                    continue
+                updates = {}
+                if str(row.get('publication_status') or '').strip() != '2':
+                    updates['publication_status'] = '2'
+                if incoming_tags:
+                    tags = _join_terms([row.get('tags'), incoming_tags])
+                    if tags != str(row.get('tags') or '').strip():
+                        updates['tags'] = tags
+                if updates:
+                    gateway.execute(
+                        'UPDATE books SET ' + ', '.join(f'{field} = ?' for field in updates)
+                        + ' WHERE id = ?', (*updates.values(), row['id']))
+                    changed += 1
+            if end_date:
+                date_key = _series_dates_key(library_id, series)
+                saved = _read_series_dates(gateway, date_key)
+                if saved.get('end') != end_date:
+                    saved['end'] = end_date
+                    gateway.set_setting(date_key, json.dumps(saved, ensure_ascii=False))
+                    changed += 1
+            print(f'[RabbitPlugins-Metadata] 완결 갱신: series={series!r} '
+                  f'end_date={end_date or "제공처 값 없음"} '
+                  f'tags={bool(incoming_tags)}')
+        return handled, changed
+
     def _auto_collect(self, db_type, payload):
         config = self.get_plugin_config(db_type, {}) or {}
         gateway = self.get_db_gateway(db_type)
         library_id = payload.get('library_id')
         source_order = _metadata_source_order(config)
         selected_fields = _metadata_field_selection(config, automatic=True)
+        completion_series, completion_updated = self._refresh_newly_completed_series(
+            gateway, db_type, payload, config, source_order,
+            do_refresh=payload.get('_rabbit_allow_overwrite', True))
         localized_sql = _optional_column_sql(gateway, 'books', 'b', 'localized_series')
         artist_sql = _optional_column_sql(gateway, 'books', 'b', 'cover_artist')
         localized_condition = (
@@ -3898,7 +4035,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         for row in rows:
             series = str(row.get('series_name') or row.get('title') or '').strip()
             key = (series.casefold(), row.get('library_id'))
-            if not series or key in seen:
+            if not series or key in seen or series in completion_series:
                 continue
             seen.add(key)
             processed += 1
@@ -3967,7 +4104,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                       f'book_type={book_type!r}')
         return {
             'rows': len(rows), 'processed': processed,
-            'matched': matched, 'updated': updated,
+            'matched': matched, 'updated': updated + completion_updated,
         }
 
     def _queue_auto_collect(self, db_type, payload):
