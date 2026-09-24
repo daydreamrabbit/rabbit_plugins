@@ -62,7 +62,7 @@ from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '3.2.0'
+PLUGIN_VERSION = '3.2.1'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -93,6 +93,15 @@ METADATA_FIELDS = (
     'publication_status', 'books_lv', 'publication_start_date', 'publication_end_date',
 )
 METADATA_COVER_KIND_PATTERN = re.compile(r'^[a-z][a-z0-9_-]{0,23}$')
+YES24_NOVEL_SECTIONS = frozenset({
+    # eBook>판타지/무협 (017001049), eBook>로맨스 (017001046),
+    # eBook>라이트노벨 (017001063). goodsSortNm can omit the parent label.
+    '판타지/무협', '판타지', '퓨전', '현대', '게임', '스포츠', '대체역사', '무협',
+    '로맨스', '현대물', '역사/시대물', 'tl/삽화소설', '할리퀸', '로맨틱판타지',
+    '라이트노벨', '시프트노벨', 'nt 노벨', 'l노벨', '노블엔진', '시드노벨',
+    's노벨', 'ak novel', '길찾기', '나이트노벨', '노블오즈', '익스트림노벨',
+    '제이노블', '기타 라이트노벨',
+})
 
 # Scanner hooks can be delivered by more than one background thread (the
 # ``new books`` and ``scan completed`` events are intentionally independent in
@@ -1131,6 +1140,8 @@ def _metadata_candidate_variant_label(candidate, content_kind, book_type=''):
         return 'BL 라이트노벨' if is_bl else '라이트노벨'
     is_ebook = bool(re.search(r'소설\s*e북|전자책|단행본|총\s*\d+\s*권', evidence, re.I))
     is_serial = bool(re.search(r'웹소설|연재|총\s*\d+\s*화', evidence, re.I))
+    if current in {'웹소설', 'BL 웹소설'}:
+        return 'BL 웹소설' if is_bl else '웹소설'
     if is_ebook:
         return 'BL 소설 e북' if is_bl else '소설 e북'
     if is_serial:
@@ -2554,7 +2565,59 @@ def _yes24_candidate_item_id(candidate):
     return match.group(1) if match else ''
 
 
-def _yes24_search(query, content_kind, api_key, allow_partial=False, limit=8):
+def _yes24_item_kind(item):
+    """Classify a product from YES24's catalogue path, not its eBook flag."""
+    goods_type = str(item.get('goodsType') or '').strip().casefold()
+    parts = [part.strip().casefold() for part in re.split(r'\s*[-＞>]\s*',
+             str(item.get('goodsSortNm') or '')) if part.strip()]
+    if goods_type not in {'ebook', '도서', '국내도서', '외국도서', '만화'} or len(parts) < 2:
+        return ''
+    if parts[0] not in {'ebook', '국내도서', '외국도서'}:
+        return ''
+    section = parts[1]
+    rest = parts[2:]
+    if section == '무료ebook' and rest:
+        section, rest = rest[0], rest[1:]
+    if any('웹툰' in part for part in parts[1:]):
+        return 'manhwa'
+    if section in {'만화', 'bl만화'} or (parts[0] == '외국도서' and
+            any('만화' in part for part in rest)):
+        return 'manga'
+    if section == '만화/라이트노벨':
+        if any('라이트노벨' in part for part in rest):
+            return 'novel'
+        return 'manga' if goods_type == '만화' else ''
+    if section in YES24_NOVEL_SECTIONS or section in {'소설', '소설/시/희곡', 'bl'}:
+        return 'novel'
+    if section == '문학' and any('소설' in part for part in rest):
+        return 'novel'
+    if section == '잡지':
+        return 'magazine'
+    if section in {'무료ebook', '오디오북', 'ebook 리더기', 'ebook 대량/법인',
+                   '대여', 'gl'}:
+        return ''
+    return 'book'
+
+
+def _yes24_edition(title):
+    """A numbered episode is serialized; a volume or bare title is an e-book."""
+    title = unicodedata.normalize('NFKC', html_lib.unescape(str(title or '')))
+    if (re.search(r'^\s*(?:\[[^\]]*연재[^\]]*\]|【[^】]*연재[^】]*】)', title)
+            or re.search(r'(?<!\d)\d+(?:[.,]\d+)?\s*화(?:\D|$)', title)
+            or re.search(r'총\s*\d+\s*화', title)):
+        return 'series'
+    return 'single'
+
+
+def _yes24_local_edition(file_names):
+    """Use local episode markers; an unnumbered file defaults to e-book."""
+    names = [os.path.basename(str(name).replace('\\', '/')) for name in file_names or ()]
+    editions = {_yes24_edition(Path(name).stem) for name in names if name}
+    return editions.pop() if len(editions) == 1 else ('single' if not editions else '')
+
+
+def _yes24_search(query, content_kind, api_key, allow_partial=False, limit=8,
+                  edition=''):
     """Search the official YES24 Goods API without exposing its key in URLs."""
     api_key = str(api_key or '').strip()
     if not api_key:
@@ -2597,6 +2660,14 @@ def _yes24_search(query, content_kind, api_key, allow_partial=False, limit=8):
                 or _metadata_variant_excluded(title)
                 or not _metadata_title_matches(query, title, allow_partial=allow_partial)):
             continue
+        item_kind = _yes24_item_kind(item)
+        requested_kind = {'잡지': 'magazine'}.get(content_kind, content_kind)
+        if not item_kind or (requested_kind in {'book', 'manga', 'novel', 'manhwa', 'magazine'}
+                             and item_kind != requested_kind):
+            continue
+        item_edition = _yes24_edition(title)
+        if edition and item_edition != edition:
+            continue
         seen.add(item_id)
         link = f'https://www.yes24.com/product/goods/{item_id}'
         content = item.get('contentDetail') if isinstance(item.get('contentDetail'), dict) else {}
@@ -2616,7 +2687,10 @@ def _yes24_search(query, content_kind, api_key, allow_partial=False, limit=8):
             'books_lv': 'adult only' if str(item.get('adultYn') or '').upper() == 'Y' else '',
         })
         media_type = {'novel': '소설 e북', 'manga': '만화 e북',
-                      'manhwa': '웹툰', 'book': '도서'}.get(content_kind, '전자책')
+                      'manhwa': '웹툰', 'book': '도서', 'magazine': '잡지'}.get(item_kind, '전자책')
+        if item_edition == 'series':
+            media_type = {'novel': '웹소설', 'manga': '만화 연재',
+                          'manhwa': '웹툰 연재'}.get(item_kind, media_type)
         results.append({
             'id': f'yes24:{item_id}', 'title': title, 'url': link, 'link': link,
             'source': 'yes24', 'source_label': METADATA_SOURCE_LABELS['yes24'],
@@ -2912,7 +2986,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         return self._apply_metadata(gateway, book_id, item_data or {}, config, manual=True)
 
     def _search_metadata(self, query, config, db_type='general', content_kind=None,
-                         book_type='', manual=False, ebook_code='', author_hint='', refresh=False):
+                         book_type='', manual=False, ebook_code='', author_hint='', refresh=False,
+                         yes24_edition=''):
         ebook_code = _metadata_ebook_code(ebook_code or query)
         query, query_author = _metadata_book_folder_identity(query, content_kind)
         author_hint = author_hint or query_author
@@ -2927,6 +3002,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         content_kind = _metadata_content_kind(
             content_kind or ('novel' if db_type == 'adult' else 'manga'))
         book_type = _metadata_book_type_value(book_type)
+        if not manual and not yes24_edition:
+            yes24_edition = 'series' if book_type == 'series' else 'single'
         yes24_api_key = str(config.get('yes24_api_key') or '').strip()
         if not yes24_api_key and db_type != 'general' and 'yes24' in _metadata_source_order(config):
             # Plugin management saves its settings in the general DB; the
@@ -2944,10 +3021,11 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         # are not cached so a later scan can retry the provider immediately.
         # Manual and automatic searches have different title matching rules,
         # so they must never share a cache entry.
-        cache_key = 'metadata-search:v26:' + hashlib.sha256(
+        cache_key = 'metadata-search:v30:' + hashlib.sha256(
             json.dumps([
                 query, content_kind, book_type,
                 _metadata_source_order(config), bool(manual), ebook_code, author_hint,
+                yes24_edition,
                 config.get("novelpia_author_search_url", ""),
                 hashlib.sha256(yes24_api_key.encode()).hexdigest(),
             ], ensure_ascii=False).encode()
@@ -3021,7 +3099,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             elif source == 'yes24':
                 candidates = _yes24_search(
                     query, content_kind, yes24_api_key,
-                    allow_partial=bool(manual))
+                    allow_partial=bool(manual), edition=yes24_edition)
             elif source == 'kyobo' and ebook_code:
                 direct = _kyobo_code_candidate(query, ebook_code)
                 candidates = [direct] if direct else []
@@ -3042,7 +3120,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 source = str(candidate.get('source') or '').casefold()
                 title_key = _metadata_match_key(
                     candidate.get('title') or (candidate.get('metadata') or {}).get('title'))
-                work_key = (source, title_key) if source in METADATA_SOURCES and source != 'series_db' and title_key else None
+                work_key = ((source, title_key, _yes24_edition(candidate.get('title')))
+                            if source == 'yes24' and title_key else
+                            (source, title_key) if source in METADATA_SOURCES and source != 'series_db' and title_key
+                            else None)
                 if work_key and work_key in seen_work_keys:
                     continue
                 seen.add(key)
@@ -4284,7 +4365,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             )
             candidates = self._search_metadata(
                 search_title, config, db_type, content_kind, book_type,
-                ebook_code=ebook_code, author_hint=author_hint)
+                ebook_code=ebook_code, author_hint=author_hint,
+                yes24_edition=_yes24_local_edition(series_files.get(key, ())))
             diagnostics = []
             selected_candidates = self._select_auto_candidates(
                 candidates,

@@ -52,6 +52,7 @@ class ProviderTests(unittest.TestCase):
         item = {
             'itemId': 12345678, 'title': '클린 코드', 'author': '로버트 C. 마틴 저',
             'publisher': '인사이트', 'goodsType': '국내도서',
+            'goodsSortNm': '국내도서-IT 모바일',
             'isbn13': '9788966260959', 'publishDate': '20131224',
             'cover': 'https://image.yes24.com/goods/12345678/L',
             'link': 'https://www.yes24.com/product/goods/12345678',
@@ -83,10 +84,123 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(get.call_args.kwargs['params']['category'], 'ALL')
         self.assertEqual(get.call_args.kwargs['params']['detail'], 'Y')
         with patch('requests.get', return_value=response):
-            self.assertEqual(len(m._yes24_search('클린', 'novel', 'private-key', True)), 2)
+            self.assertEqual(m._yes24_search('클린', 'novel', 'private-key', True), [])
         with patch('requests.get') as get:
             self.assertEqual(m._yes24_search('클린 코드', 'book', ''), [])
             get.assert_not_called()
+
+    def test_yes24_filters_candidates_by_catalogue_kind(self):
+        sections = [
+            ('eBook-만화-판타지/SF', 'manga'),
+            ('eBook-만화-웹툰', 'manhwa'),
+            ('ebook-라이트노벨', 'novel'),
+            ('eBook-BL-소설', 'novel'),
+            ('eBook-BL만화-국내', 'manga'),
+            ('eBook-컴퓨터와인터넷-IT 전문서', 'book'),
+            ('eBook-잡지-성인', 'magazine'),
+        ]
+        items = [dict(itemId=index, title='같은 제목', author='작가',
+                      goodsType='eBook', goodsSortNm=category)
+                 for index, (category, _) in enumerate(sections, 1)]
+        items.extend([
+            dict(itemId=8, title='같은 제목', goodsType='도서',
+                 goodsSortNm='국내도서-소설/시/희곡'),
+            dict(itemId=9, title='같은 제목', goodsType='Blu-ray',
+                 goodsSortNm='DVD/Blu-ray-애니메이션'),
+        ])
+        response = SimpleNamespace(status_code=200, raise_for_status=lambda: None,
+                                   json=lambda: {'success': True, 'data': {'items': items}})
+        expected = {
+            'manga': ['yes24:1', 'yes24:5'],
+            'manhwa': ['yes24:2'],
+            'novel': ['yes24:3', 'yes24:4', 'yes24:8'],
+            'book': ['yes24:6'],
+            '잡지': ['yes24:7'],
+        }
+        with patch('requests.get', return_value=response):
+            for kind, ids in expected.items():
+                found = m._yes24_search('같은 제목', kind, 'private-key')
+                self.assertEqual([row['id'] for row in found], ids, kind)
+        self.assertEqual(m._yes24_item_kind({'goodsType': 'eBook'}), '')
+
+    def test_yes24_fantasy_and_martial_arts_are_novels(self):
+        items = [
+            {'itemId': 99121472, 'title': '환생자의 재벌테크',
+             'author': '필로스 저', 'goodsType': 'eBook',
+             'goodsSortNm': 'ebook-판타지'},
+            {'itemId': 12345, 'title': '환생자의 재벌테크',
+             'author': '필로스 저', 'goodsType': 'eBook',
+             'goodsSortNm': 'ebook-무협'},
+        ]
+        response = SimpleNamespace(status_code=200, raise_for_status=lambda: None,
+                                   json=lambda: {'success': True, 'data': {'items': items}})
+        with patch('requests.get', return_value=response):
+            novels = m._yes24_search('환생자의 재벌테크', 'novel', 'private-key')
+            books = m._yes24_search('환생자의 재벌테크', 'book', 'private-key')
+        self.assertEqual([row['id'] for row in novels], ['yes24:99121472', 'yes24:12345'])
+        self.assertEqual(novels[0]['author'], '필로스')
+        self.assertEqual(books, [])
+
+    def test_yes24_three_novel_category_families(self):
+        for category in (
+            'ebook-판타지/무협', 'ebook-퓨전', 'ebook-현대', 'ebook-게임',
+            'ebook-스포츠', 'ebook-대체역사',
+            'ebook-로맨스', 'ebook-현대물', 'ebook-역사/시대물',
+            'ebook-TL/삽화소설', 'ebook-로맨틱판타지', 'ebook-로맨스-GL',
+            'ebook-라이트노벨', 'ebook-시프트노벨', 'ebook-NT 노벨',
+            'ebook-노블엔진', 'ebook-길찾기', 'ebook-제이노블',
+            'ebook-라이트노벨-대여',
+        ):
+            with self.subTest(category=category):
+                self.assertEqual(m._yes24_item_kind(
+                    {'goodsType': 'eBook', 'goodsSortNm': category}), 'novel')
+        for category in ('ebook-대여', 'ebook-GL'):
+            self.assertEqual(m._yes24_item_kind(
+                {'goodsType': 'eBook', 'goodsSortNm': category}), '')
+        self.assertEqual(m._yes24_item_kind(
+            {'goodsType': 'eBook', 'goodsSortNm': 'ebook-만화-스포츠'}), 'manga')
+
+    def test_yes24_episode_and_volume_editions(self):
+        items = [
+            {'itemId': 107847473, 'title': '하멜른의 영주', 'author': '재유 저',
+             'goodsType': 'eBook', 'goodsSortNm': 'ebook-판타지'},
+            {'itemId': 35838841, 'title': '[연재] 하멜른의 영주 142화 (완결)',
+             'author': '재유 저', 'goodsType': 'eBook', 'goodsSortNm': 'ebook-판타지'},
+            {'itemId': 111680764, 'title': '[대여] 하멜른의 영주 1권',
+             'author': '재유 저', 'goodsType': 'eBook', 'goodsSortNm': 'ebook-판타지'},
+        ]
+        response = SimpleNamespace(status_code=200, raise_for_status=lambda: None,
+                                   json=lambda: {'success': True, 'data': {'items': items}})
+        with patch('requests.get', return_value=response):
+            both = m._yes24_search('하멜른의 영주', 'novel', 'key')
+            serial = m._yes24_search('하멜른의 영주', 'novel', 'key', edition='series')
+            volume = m._yes24_search('하멜른의 영주', 'novel', 'key', edition='single')
+        self.assertEqual([row['variant_label'] for row in both],
+                         ['소설 e북', '웹소설', '소설 e북'])
+        self.assertEqual([row['id'] for row in serial], ['yes24:35838841'])
+        self.assertEqual([row['id'] for row in volume],
+                         ['yes24:107847473', 'yes24:111680764'])
+        self.assertEqual(m._yes24_local_edition(['하멜른의 영주 01화.txt']), 'series')
+        self.assertEqual(m._yes24_local_edition(['하멜른의 영주 01권.epub']), 'single')
+        self.assertEqual(m._yes24_local_edition(['환생자의 재벌테크.txt']), 'single')
+        self.assertEqual(m._yes24_local_edition(['01화.txt', '01권.epub']), '')
+        with patch.object(m, '_yes24_search', return_value=both):
+            found = self.provider()._search_metadata(
+                '하멜른의 영주', {'metadata_sources': 'yes24', 'yes24_api_key': 'key'},
+                content_kind='novel', book_type='novel', manual=True)
+        self.assertEqual([row['id'] for row in found],
+                         ['yes24:107847473', 'yes24:35838841'])
+        self.assertEqual(found[1]['variant_label'], '웹소설')
+        config = {'metadata_sources': 'yes24', 'yes24_api_key': 'key'}
+        with patch('requests.get', return_value=response):
+            auto_serial = self.provider()._search_metadata(
+                '하멜른의 영주', config, content_kind='novel', book_type='novel',
+                yes24_edition=m._yes24_local_edition(['하멜른의 영주 01화.txt']))
+            auto_volume = self.provider()._search_metadata(
+                '하멜른의 영주', config, content_kind='novel', book_type='novel',
+                yes24_edition=m._yes24_local_edition(['하멜른의 영주 01권.epub']))
+        self.assertEqual([row['id'] for row in auto_serial], ['yes24:35838841'])
+        self.assertEqual([row['id'] for row in auto_volume], ['yes24:107847473'])
 
     def test_yes24_errors_do_not_expose_api_key(self):
         response = SimpleNamespace(status_code=401, raise_for_status=lambda: (_ for _ in ()).throw(
