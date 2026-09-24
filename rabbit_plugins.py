@@ -62,7 +62,7 @@ from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '3.2.2'
+PLUGIN_VERSION = '3.2.3'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -634,6 +634,8 @@ def _join_links(*values):
 def _link_provider(value):
     """Return the metadata provider represented by one external URL."""
     host = (urlparse(str(value or '').strip()).hostname or '').casefold()
+    if host == 'mangabaka.org' or host.endswith('.mangabaka.org'):
+        return 'series_db'
     if host == 'ridibooks.com' or host.endswith('.ridibooks.com') or host == 'ridi.com' or host.endswith('.ridi.com'):
         return 'ridi'
     if host == 'series.naver.com':
@@ -3595,6 +3597,19 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         if not self._series_db_path().is_file():
             return {}
         candidate_title = str((candidate or {}).get('title') or '').strip()
+        # A Korean title match is stronger evidence than an author and volume
+        # count. The same creator may have several unrelated works with a
+        # similar count; the fallback below must not add their MangaBaka link.
+        title_query = re.sub(r'\s*\(\s*총\s*\d+\s*(?:권|화|편).*$', '', candidate_title)
+        title_query = re.sub(r'\s*\[[^\[\]]+\]\s*$', '', title_query).strip()
+        title_matches = [row for row in self._series_db_search(title_query, content_kind, limit=80)
+                         if any(_metadata_title_matches(title_query, title)
+                                for title in row.get('_match_titles') or ())]
+        if title_matches:
+            if len(title_matches) != 1:
+                return {}
+            values = _metadata_clean(title_matches[0].get('metadata'))
+            return {key: values[key] for key in ('localized_series', 'link') if values.get(key)}
         volume_match = re.search(r'총\s*(\d+)\s*권', candidate_title, re.IGNORECASE)
         final_volume = None
         if volume_match:

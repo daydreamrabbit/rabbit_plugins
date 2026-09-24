@@ -164,6 +164,22 @@ class AutoIdentityTests(unittest.TestCase):
   self.assertNotIn('/old',merged)
   self.assertIn('/new',merged)
   self.assertIn('series.naver.com',merged)
+ def test_new_series_db_link_replaces_stale_mangabaka_work(self):
+  existing='https://mangabaka.org/80492, https://ridibooks.com/books/123'
+  incoming='https://mangabaka.org/664, https://ridibooks.com/books/123'
+  merged=m._replace_provider_links(existing,incoming)
+  self.assertEqual(merged,'https://mangabaka.org/664, https://ridibooks.com/books/123')
+ def test_exact_series_db_title_prevents_same_author_wrong_work(self):
+  provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  provider._series_db_path=lambda:SimpleNamespace(is_file=lambda:True)
+  provider._series_db_search=lambda *_args,**_kwargs:[{
+   '_match_titles':['옆자리 녀석이 그런 눈으로 쳐다본다'],
+   'metadata':{'localized_series':'となりの席のヤツがそういう目で見てくる',
+               'link':'https://mangabaka.org/664'}}]
+  identity=provider._series_db_remote_identity(
+   {'title':'옆자리 녀석이 그런 눈으로 쳐다본다 [단행본] (총 4권/미완결)'},
+   {'author':'mmk'},'manga')
+  self.assertEqual(identity['link'],'https://mangabaka.org/664')
  def test_selected_product_genre_replaces_stale_variant(self):
   merged=m._merge_variant_genres('만화 e북, 19+','해외 순정, 만화 연재, 성인')
   self.assertEqual(merged,'만화 e북, 19+, 해외 순정, 성인')
