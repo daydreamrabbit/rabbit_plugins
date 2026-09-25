@@ -17,6 +17,7 @@ class WidgetTests(unittest.TestCase):
    books=[x for x in data['items'] if 'id' in x]
    self.assertEqual([x['id'] for x in books],[1]);self.assertNotIn('restricted',str(data));self.assertNotIn('secret.jpg',str(data))
  def test_summary_heading_cleanup_and_body_preservation(self):
-  for prefix in ['작품 소개\n\n','## 작품 소개\n','<h2>작품 소개</h2>','작품 소개: ']:
+  for prefix in ['작품 소개\n\n','## 작품 소개\n','<h2>작품 소개</h2>','작품 소개: ','[줄거리]\n']:
    self.assertEqual(m._metadata_summary(prefix+'본문 <img src="cover.jpg">'),'본문 <img src="cover.jpg">')
   self.assertEqual(m._metadata_summary('이 작품 소개를 읽어 보세요.'),'이 작품 소개를 읽어 보세요.')
+  self.assertEqual(m._metadata_summary('본문의 [줄거리] 표현'),'본문의 [줄거리] 표현')

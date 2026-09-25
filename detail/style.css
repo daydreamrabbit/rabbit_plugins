@@ -300,6 +300,10 @@
 .ds-star-half { position: relative; display: block; flex: 0 0 11px; width: 11px; height: 24px; overflow: hidden; padding: 0; border: 0; background: none; color: #e6b841; line-height: 1; }
 .ds-star-half i { position: absolute; top: 50%; left: 0; width: 22px; transform: translateY(-50%); font-size: 18px; text-align: center; }
 .ds-star-half.is-right i { left: -11px; }
+.ds-star-half svg { position: absolute; top: 50%; left: 0; width: 22px; height: 22px; transform: translateY(-50%); fill: none; stroke: currentColor; stroke-width: 1.5; }
+.ds-star-half.is-right svg { left: -11px; }
+.ds-star-half svg.fa-solid { fill: currentColor; }
+.ds-detail-loading { color: var(--ds-muted); }
 .ds-stars button.ds-star-half { cursor: pointer; touch-action: manipulation; user-select: none; }
 .ds-stars button:disabled { cursor: default; }
 .ds-rating-summary { flex: 0 0 auto; width: auto; margin: 0 0 0 7px; color: var(--ds-muted); font-size: 10px; line-height: 1.2; text-align: left; white-space: nowrap; }
@@ -443,6 +447,8 @@
 .ds-field textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--ds-border); border-radius: 5px; background: var(--ds-soft); color: var(--ds-text); font-size: 12px; }
 .ds-field textarea { min-height: 260px; resize: vertical; line-height: 1.7; }
 .ds-field small { font-size: 10px; }
+.ds-banner-remove-field { flex-direction: row; align-items: center; }
+.ds-banner-remove-field input[type="checkbox"] { width: auto; margin: 0; }
 .ds-savebar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; }
 .ds-savebar > span { color: var(--ds-muted); font-size: 11px; }
 .ds-savebar > div { display: flex; gap: 8px; }

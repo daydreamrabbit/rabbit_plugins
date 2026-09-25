@@ -62,7 +62,7 @@ from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '3.2.3'
+PLUGIN_VERSION = '3.3.0'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -120,6 +120,8 @@ _COVER_PREFERENCE_LOCK = threading.Lock()
 _COVER_RECONCILE_START_LOCK = threading.Lock()
 _COVER_RECONCILE_STARTED = False
 _EXTERNAL_COVER_PREFERENCES_KEY = 'rabbit_plugins:external-cover-preferences:v1'
+_EXTERNAL_LINK_PREFERENCES_KEY = 'rabbit_plugins:external-link-preferences:v1'
+_LINK_PREFERENCE_LOCK = threading.Lock()
 
 
 def _setting_text(gateway, key, default=''):
@@ -135,6 +137,76 @@ def _external_cover_preferences(gateway):
     except (TypeError, ValueError, json.JSONDecodeError):
         value = {}
     return value if isinstance(value, dict) else {}
+
+
+def _external_link_preferences(gateway):
+    try:
+        value = json.loads(_setting_text(gateway, _EXTERNAL_LINK_PREFERENCES_KEY, '{}'))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        value = {}
+    return value if isinstance(value, dict) else {}
+
+
+def _remember_external_links(gateway, library_id, series_name, links):
+    """Retain selected provider links across a later ComicInfo rescan."""
+    links = _join_links(links)
+    if not links or not series_name:
+        return
+    key = f'{int(library_id)}:{series_name}'
+    with _LINK_PREFERENCE_LOCK:
+        preferences = _external_link_preferences(gateway)
+        if preferences.get(key) == links:
+            return
+        preferences[key] = links
+        gateway.set_setting(
+            _EXTERNAL_LINK_PREFERENCES_KEY,
+            json.dumps(preferences, ensure_ascii=False, separators=(',', ':')),
+        )
+
+
+def _reconcile_external_links(provider, db_type, library_id):
+    """Restore provider URLs replaced by an archive's shorter Web list."""
+    try:
+        library_id = int(library_id)
+    except (TypeError, ValueError):
+        return 0
+    if library_id < 1:
+        return 0
+    gateway = provider.get_db_gateway(db_type)
+    preferences = _external_link_preferences(gateway)
+    prefix = f'{library_id}:'
+    changed = 0
+    for key, expected in preferences.items():
+        if not key.startswith(prefix) or not isinstance(expected, str):
+            continue
+        series_name = key[len(prefix):]
+        if not series_name:
+            continue
+        rows = gateway.fetch_all(
+            'SELECT id, link, metadata_locked FROM books WHERE library_id = ? '
+            'AND series_name = ? AND COALESCE(is_deleted, 0) = 0',
+            (library_id, series_name),
+        )
+        desired = _join_links(expected).split(', ')
+        for row in rows:
+            if int(row.get('metadata_locked') or 0):
+                continue
+            current = str(row.get('link') or '').strip()
+            current_links = _join_links(current).split(', ') if current else []
+            # ComicInfo may carry a distinct Ridi product URL for each volume.
+            # Keep that URL and restore the series-level provider links.
+            incoming = [link for link in desired if not (
+                _link_provider(link) == 'ridi' and any(
+                    _link_provider(old) == 'ridi' for old in current_links))]
+            restored = _replace_provider_links(current, incoming)
+            if restored and restored != _join_links(current):
+                gateway.execute('UPDATE books SET link = ? WHERE id = ?',
+                                (restored, row['id']))
+                changed += 1
+    if changed:
+        print(f'[RabbitPlugins-Metadata] scanner link restore db={db_type} '
+              f'library_id={library_id} changed={changed}')
+    return changed
 
 
 def _remember_external_cover(gateway, book_id, cover_path, library_id, content_kind):
@@ -708,6 +780,7 @@ def _metadata_summary(value, title=''):
     # Strip a provider's leading section heading without flattening body HTML.
     text = re.sub(r'^\s*<(h[1-6]|p|div|strong|b)\b[^>]*>\s*작품\s*소개\s*[:：]?\s*</\1>\s*', '', text, count=1, flags=re.I)
     text = re.sub(r'^\s*(?:#{1,6}\s*)?작품\s*소개(?:\s*[:：]\s*|\s+|$)', '', text, count=1)
+    text = re.sub(r'^\s*\[\s*줄거리\s*\]\s*', '', text, count=1)
     clean_title = _metadata_title(title)
     if clean_title:
         text = re.sub(
@@ -925,6 +998,7 @@ def _metadata_clean(item):
         'isbn': str(item.get('isbn') or item.get('isbn13') or '').strip(),
         'link': _join_links(item.get('link') or item.get('url') or item.get('web_url') or ''),
         'cover': str(item.get('cover') or item.get('cover_url') or item.get('coverUrl') or '').strip(),
+        'is_standalone': item.get('is_standalone') is True,
     }
     return {key: value for key, value in result.items() if value}
 
@@ -1076,7 +1150,7 @@ def _title_key(value):
 
 def _series_title_key(value):
     text = re.sub(r'\s*\[[^\[\]]+\]\s*$', '', str(value or '').strip())
-    return _title_key(text)
+    return _title_key(re.sub(r'["“”„‟″′〝〞]', '', text))
 
 
 def _metadata_match_key(value):
@@ -1109,7 +1183,9 @@ def _metadata_match_key(value):
     text = re.sub(
         r'(?:\s*(?:\[[^\]]+\]|【[^】]+】|\([^)]*\)|（[^）]*）))+\s*$',
         '', text)
-    return _title_key(text)
+    # Retailers mix ASCII, curly and double-prime quotation marks in the
+    # same work title. They are typography, not an identity difference.
+    return _title_key(re.sub(r'["“”„‟″′〝〞]', '', text))
 
 
 def _metadata_title_matches(query, candidate_title, allow_partial=False):
@@ -1123,6 +1199,25 @@ def _metadata_title_matches(query, candidate_title, allow_partial=False):
     # automatic collection exact, while allowing an entered title prefix (or
     # a provider's longer canonical title) in the manual result list.
     return bool(allow_partial and query_key in candidate_key)
+
+
+def _quoted_title_search(query, finder, allow_partial=False):
+    """Retry a quoted title by its distinctive opening phrase, then verify it."""
+    candidates = finder(query, allow_partial)
+    if candidates:
+        return candidates
+    text = str(query or '').strip()
+    if not text.startswith(('"', '“', '″', '〝')):
+        return candidates
+    closing = re.search(r'["”″〞]', text[1:])
+    if not closing:
+        return candidates
+    phrase = text[1:closing.start() + 1].strip()
+    if len(_metadata_match_key(phrase)) < 12:
+        return candidates
+    return [candidate for candidate in finder(phrase, True)
+            if _metadata_title_matches(text, candidate.get('title'),
+                                       allow_partial=allow_partial)]
 
 
 def _metadata_candidate_variant_label(candidate, content_kind, book_type=''):
@@ -1315,6 +1410,10 @@ def _korean_titles(titles, secondary_titles):
             else:
                 title = entry
             title = str(title or '').strip()
+            # Some Series.db aliases mix an ASCII opening quote with a
+            # typographic closing quote, while local folders use both curly.
+            if title.startswith('"') and '”' in title:
+                title = '“' + title[1:]
             if title and title not in result:
                 result.append(title)
     return result
@@ -1596,6 +1695,7 @@ def _read_comicinfo(path, file_format, artist, _file_mtime, _file_size):
                 result['volume'], result['count'] = _series_volume_and_count(metadata_entries)
                 result['number'] = _series_number(metadata_entries)
                 result['localized_series'] = meta.get('comic-book-butler:localizedseries', '')
+                result['format'] = meta.get('comic-book-butler:format', '') or meta.get('format', '')
                 for raw_date in dates:
                     result['date'] = _metadata_publication_date([('date', raw_date)])
                     if result['date']:
@@ -1711,6 +1811,21 @@ def _inline_json_object(source, variable):
     return value if isinstance(value, dict) else {}
 
 
+def _ridi_keyword_tags(value, metadata):
+    """Keep Ridi's keywords without its SEO media, credit and publisher terms."""
+    excluded = {'ebook', 'e북', '전자책', '라이트노벨', '라노벨'}
+    for field in ('genre', 'author', 'cover_artist', 'publisher'):
+        excluded.update(
+            _title_key(term) for term in _metadata_keyword_list(metadata.get(field))
+        )
+    result = []
+    for term in _metadata_keyword_list(value):
+        key = _title_key(term)
+        if key and key not in excluded and term not in result:
+            result.append(term)
+    return _join_terms(result)
+
+
 def _ridi_genres(source):
     """Extract Ridi's parent and child categories as genres.
 
@@ -1748,6 +1863,11 @@ def _ridi_genres(source):
             text = _html_text(item)
             if text and text != '미정' and text not in genres:
                 genres.append(text)
+    # Ridi files light novels beneath the COMIC catalogue internally, but
+    # its visible breadcrumb identifies them as light novels.
+    if str(detail.get('sub_genre') or '').casefold() == 'lightnovel':
+        genres = ['라이트노벨'] + [name for name in genres
+                              if name not in {'만화 e북', '만화 연재', '라이트노벨'}]
     return genres
 
 
@@ -1959,6 +2079,33 @@ def _ridi_role_metadata(source):
     return result
 
 
+def _ridi_volume_release_dates(source):
+    """Read dated volume entries from Ridi's series list, excluding episodes."""
+    match = re.search(r'(?:var|let|const)\s+seriesBookListJson\s*=',
+                      str(source or ''))
+    if not match:
+        return {}
+    try:
+        books, _ = json.JSONDecoder().raw_decode(str(source)[match.end():].lstrip())
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(books, list):
+        return {}
+    dates = {}
+    for book in books[:1000]:
+        if not isinstance(book, dict) or not re.search(r'\d+\s*권',
+                                                      str(book.get('title') or '')):
+            continue
+        volume = _volume_key(book.get('volume'))
+        raw_date = str(book.get('open_date') or book.get('reg_date') or '')
+        value = _metadata_date(raw_date[:10].replace('.', '-'))
+        if not value and re.match(r'^\d{8}', raw_date):
+            value = _metadata_date(f'{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}')
+        if volume and value:
+            dates[volume] = value
+    return dates
+
+
 def _ridi_publication_metadata(source):
     detail = _inline_json_object(source, 'bookDetail')
     result = {}
@@ -1970,7 +2117,13 @@ def _ridi_publication_metadata(source):
     elif age == '0':
         result['books_lv'] = 'everyone'
     complete = str(detail.get('is_series_complete', ''))
-    if complete in ('0', '1'):
+    is_series = str(detail.get('is_series', '')) == '1' or bool(detail.get('series_id'))
+    is_standalone = (str(detail.get('is_series', '')) == '0'
+                     and not detail.get('series_id')
+                     and str(detail.get('volume', '') or '0') == '0')
+    if is_standalone:
+        result['is_standalone'] = True
+    if is_series and complete in ('0', '1'):
         result['publication_status'] = '2' if complete == '1' else '0'
     raw_date = str(detail.get('pub_date') or '')
     published = _metadata_date(f'{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}') if re.fullmatch(r'\d{8}', raw_date) else _metadata_date(raw_date)
@@ -1978,7 +2131,32 @@ def _ridi_publication_metadata(source):
         result['release_date'] = published
         if str(detail.get('volume')) == '1':
             result['publication_start_date'] = published
+    volume_dates = _ridi_volume_release_dates(source)
+    if volume_dates:
+        result['release_dates_by_volume'] = volume_dates
+        first = min(volume_dates, key=lambda value: float(value))
+        last = max(volume_dates, key=lambda value: float(value))
+        result['publication_start_date'] = volume_dates[first]
+        if complete == '1':
+            result['publication_end_date'] = volume_dates[last]
     return result
+
+
+def _local_standalone_marker(file_path):
+    """Only an explicit single-work filename marker is affirmative evidence."""
+    stem = Path(str(file_path or '').replace('\\', '/')).stem
+    return bool(re.search(r'(?:^|[\s(\[【])단편(?:$|[\s)\]】])', stem))
+
+
+def _standalone_series(rows, metadata):
+    if len(rows) != 1:
+        return False
+    row = rows[0]
+    text = ' '.join(str(row.get(key) or '') for key in ('title', 'file_path'))
+    if _row_explicit_volume_key(row) or re.search(r'(?<!\d)\d+\s*화(?:\D|$)', text):
+        return False
+    return (metadata.get('is_standalone') is True
+            or _local_standalone_marker(row.get('file_path')))
 
 
 def _naver_role_metadata(source):
@@ -2518,7 +2696,7 @@ def _yes24_credits(value):
     """Separate YES24's display suffixes from writer and illustrator names."""
     writers = []
     artists = []
-    for part in re.split(r'[,;|\n]+', str(value or '')):
+    for part in re.split(r'[,;|/\n]+', str(value or '')):
         name = _html_text(part)
         if not name:
             continue
@@ -2824,6 +3002,7 @@ def _remote_fetch_metadata(url, source):
         })
         ridi_cover_by_volume = {}
         ridi_cover_by_title = {}
+        ridi_release_dates_by_volume = {}
         if source == 'ridi':
             ridi_genres = _ridi_genres(response.text)
             if ridi_genres:
@@ -2833,6 +3012,7 @@ def _remote_fetch_metadata(url, source):
                 metadata['genre'] = _join_terms(ridi_genres)
             metadata.update(_ridi_role_metadata(response.text))
             metadata.update(_ridi_publication_metadata(response.text))
+            ridi_release_dates_by_volume = metadata.pop('release_dates_by_volume', {})
             ridi_cover_by_volume, ridi_cover_by_title = _ridi_volume_cover_maps(response.text)
         elif source == 'naver':
             metadata.update(_naver_role_metadata(response.text))
@@ -2845,6 +3025,8 @@ def _remote_fetch_metadata(url, source):
         hashtag_text = re.findall(r'#([^\s,#]+)', str((parser.meta.get('description') if source == 'naver' else metadata.get('summary')) or ''))
         if keyword_text or hashtag_text:
             metadata['tags'] = keyword_text or ', '.join(hashtag_text)
+        if source == 'ridi' and metadata.get('tags'):
+            metadata['tags'] = _ridi_keyword_tags(metadata['tags'], metadata)
         if source == 'ridi' and any(
                 '웹소설' in str(value or '')
                 for value in (metadata.get('genre'), metadata.get('tags'))):
@@ -2856,6 +3038,8 @@ def _remote_fetch_metadata(url, source):
             result['cover_by_volume'] = ridi_cover_by_volume
         if ridi_cover_by_title:
             result['cover_by_title'] = ridi_cover_by_title
+        if ridi_release_dates_by_volume:
+            result['release_dates_by_volume'] = ridi_release_dates_by_volume
         return result
     except Exception as error:
         print(f'[RabbitPlugins-Metadata] {source} 상세 수집 실패 url={url!r}: '
@@ -2923,7 +3107,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         {'key': 'metadata_cover_overwrite', 'label': '기존 표지 덮어쓰기', 'type': 'checkbox', 'default': False},
         {'key': 'metadata_cover_overwrite_kinds', 'label': '기존 표지 덮어쓰기 자료 유형', 'type': 'text', 'default': ''},
     ]
-    detail_view = {'title': 'Rabbit Plugins · 상세페이지', 'sessions': ['general', 'adult', 'audiobook', 'video']}
+    detail_view = {'title': 'Rabbit Plugins · 상세페이지', 'sessions': ['general', 'adult', 'audiobook', 'video'], 'initial_data_mode': 'files'}
     home_widget = {
         'title': '라이브러리별 신규 도서',
         'subtitle': '선택한 라이브러리의 최근 추가 작품',
@@ -3057,7 +3241,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         # are not cached so a later scan can retry the provider immediately.
         # Manual and automatic searches have different title matching rules,
         # so they must never share a cache entry.
-        cache_key = 'metadata-search:v32:' + hashlib.sha256(
+        cache_key = 'metadata-search:v34:' + hashlib.sha256(
             json.dumps([
                 query, content_kind, book_type,
                 _metadata_source_order(config), bool(manual), ebook_code, author_hint,
@@ -3133,19 +3317,24 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             elif source == 'series_db':
                 candidates = self._series_db_search(query, content_kind)
             elif source == 'yes24':
-                candidates = _yes24_search(
-                    query, content_kind, yes24_api_key,
-                    allow_partial=bool(manual), edition=yes24_edition)
+                candidates = _quoted_title_search(
+                    query,
+                    lambda term, partial: _yes24_search(
+                        term, content_kind, yes24_api_key,
+                        allow_partial=partial, edition=yes24_edition),
+                    allow_partial=bool(manual))
             elif source == 'kyobo' and ebook_code:
                 direct = _kyobo_code_candidate(query, ebook_code)
                 candidates = [direct] if direct else []
             else:
-                candidates = _remote_search(
-                    source, query, content_kind, book_type,
-                    allow_partial=bool(manual),
+                finder = lambda term, partial: _remote_search(
+                    source, term, content_kind, book_type,
+                    allow_partial=partial,
                     all_categories=bool(manual and source == 'ridi'
                                        and not book_type
                                        and content_kind == 'manga'))
+                candidates = (_quoted_title_search(query, finder, allow_partial=bool(manual))
+                              if source == 'ridi' else finder(query, bool(manual)))
             for candidate in candidates:
                 if (author_hint and _metadata_candidate_author(candidate)
                         and not _metadata_author_matches(author_hint, _metadata_candidate_author(candidate))):
@@ -3436,6 +3625,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         cover_by_volume = {}
         cover_by_title = {}
         cover_maps_by_source = {}
+        release_dates_by_volume = {}
         genre_source = ''
         for candidate in candidates:
             values = candidate.get('metadata') or candidate
@@ -3478,6 +3668,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                     source_maps = cover_maps_by_source.setdefault(
                         source, {'cover_by_volume': {}, 'cover_by_title': {}})
                     source_maps[key].update(clean_mapping)
+            if source == 'ridi' and isinstance(values.get('release_dates_by_volume'), dict):
+                release_dates_by_volume.update(values['release_dates_by_volume'])
             cleaned = _metadata_clean(values)
             if cleaned.get('cover') and source in METADATA_SOURCES:
                 if source not in cover_sources:
@@ -3529,6 +3721,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             result['cover_by_title'] = cover_by_title
         if cover_maps_by_source:
             result['cover_maps_by_source'] = cover_maps_by_source
+        if release_dates_by_volume:
+            result['release_dates_by_volume'] = release_dates_by_volume
         return result
 
     def _series_db_search(self, query, content_kind, limit=8):
@@ -3536,8 +3730,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         if not path.is_file():
             return []
         clean_query = re.sub(r'\s*\[[^\[\]]+\]\s*$', '', query).strip()
-        pattern = '%' + query.replace('%', '%%') + '%'
-        clean_pattern = '%' + clean_query.replace('%', '%%') + '%'
+        # Search through an opening quote variant as well: Series.db can
+        # store an ASCII opening quote for a curly-quoted folder title.
+        search_query = clean_query[1:] if clean_query.startswith(('“', '"')) else clean_query
+        clean_pattern = '%' + search_query.replace('%', '%%') + '%'
         key = _series_title_key(query)
         rows = []
         try:
@@ -3755,6 +3951,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         raw_metadata = dict(item_data.get('metadata') or item_data)
         remote_cover_by_volume = {}
         remote_cover_by_title = {}
+        release_dates_by_volume = dict(item_data.get('release_dates_by_volume') or {})
         local_metadata = {}
         if manual and item_source in METADATA_SOURCES and item_source != 'series_db':
             # A remote result can identify the work, but Series.db is the
@@ -3788,6 +3985,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                     remote_cover_by_volume.update(fetched['cover_by_volume'])
                 if isinstance(fetched.get('cover_by_title'), dict):
                     remote_cover_by_title.update(fetched['cover_by_title'])
+                if isinstance(fetched.get('release_dates_by_volume'), dict):
+                    release_dates_by_volume.update(fetched['release_dates_by_volume'])
             identity = self._series_db_remote_identity(
                 item_data, fetched, content_kind)
             if identity.get('localized_series'):
@@ -3830,6 +4029,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         for source, column in mapping.items():
             value = str(metadata.get(source) or '').strip()
             if source not in selected or not value:
+                continue
+            if source == 'release_date' and release_dates_by_volume and content_kind == 'novel':
+                # The representative Ridi page's date belongs to one volume.
+                # Apply the dated series list to each local volume below.
                 continue
             if source == 'link':
                 raw_existing = str(target.get(column) or '').strip()
@@ -3911,6 +4114,16 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             'SELECT id, title, title_alias, file_path, cover_image, metadata_locked, link, ' + volume_sql + ' AS volume_index '
             'FROM books b WHERE series_name = ? AND library_id = ? '
             'AND COALESCE(is_deleted, 0) = 0 ORDER BY id', (target['series_name'], target['library_id']))
+        volume_series = content_kind == 'novel' and any(
+            _row_explicit_volume_key(row) for row in series_rows)
+        standalone = _standalone_series(series_rows, metadata)
+        if standalone:
+            # Ridi sets is_series_complete=0 even on a single e-book. A
+            # previous scan may have persisted that as "ongoing". The
+            # provider's single-work identity takes precedence here.
+            for field in ('publication_status', 'publication_start_date',
+                          'publication_end_date', 'total_chapters'):
+                metadata.pop(field, None)
         series_link = ''
         if 'link' in selected:
             series_link = (
@@ -4031,6 +4244,17 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                     updated_ids.add(row['id'])
 
         date_key = _series_dates_key(target['library_id'], target['series_name'])
+        if standalone:
+            stored_dates = _read_series_dates(gateway, date_key)
+            stored_dates.update(standalone=True)
+            for field in ('start', 'end', 'total_chapters', 'publication_status_label'):
+                stored_dates.pop(field, None)
+            gateway.set_setting(date_key, json.dumps(stored_dates, ensure_ascii=False))
+            for row in series_rows:
+                if int(row.get('metadata_locked') or 0) == 1 and not overwrite:
+                    continue
+                gateway.execute('UPDATE books SET publication_status = NULL WHERE id = ?', (row['id'],))
+                updated_ids.add(row['id'])
         if any(field in selected and metadata.get(field) for field in ('publication_start_date', 'publication_end_date')) or ('publication_status' in selected and metadata.get('publication_status')):
             try:
                 saved_dates = _read_series_dates(gateway, date_key)
@@ -4041,7 +4265,9 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                     saved_dates[key] = metadata[field]
             if 'publication_status' in selected and metadata.get('publication_status'):
                 saved_dates['publication_status_label'] = metadata.get('publication_status_label', '')
-            if 'publication_status' in selected and metadata.get('total_chapters'):
+            if volume_series:
+                saved_dates.pop('total_chapters', None)
+            elif 'publication_status' in selected and metadata.get('total_chapters'):
                 saved_dates['total_chapters'] = metadata['total_chapters']
             if saved_dates.get('start') and saved_dates.get('end') and saved_dates['start'] > saved_dates['end']:
                 return False, '연재종료일이 시작일보다 빠릅니다.'
@@ -4051,6 +4277,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             if int(row.get('metadata_locked') or 0) == 1 and not overwrite:
                 continue
             extra = {}
+            if ('release_date' in selected and volume_series and release_dates_by_volume):
+                volume_date = release_dates_by_volume.get(_row_explicit_volume_key(row))
+                if volume_date:
+                    extra['release_date'] = volume_date
             if (item_data.get('genre_source') or item_source) == 'novelpia' and 'genre' in selected and 'tags' in selected:
                 current = gateway.fetch_one('SELECT genre, tags FROM books WHERE id = ?', (row['id'],)) or {}
                 terms = list(dict.fromkeys(re.split(r'[,;|\n]', _join_terms([current.get('genre'), current.get('tags'), metadata.get('genre'), metadata.get('tags')]))))
@@ -4083,6 +4313,11 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             if extra:
                 gateway.execute('UPDATE books SET ' + ', '.join(f'{key} = ?' for key in extra) + ' WHERE id = ?', (*extra.values(), row['id']))
                 updated_ids.add(row['id'])
+
+        if 'link' in selected and series_link and (overwrite or any(
+                int(row.get('metadata_locked') or 0) == 0 for row in series_rows)):
+            _remember_external_links(
+                gateway, target['library_id'], target['series_name'], series_link)
 
         if _metadata_cover_enabled(config, content_kind) and 'cover' in selected:
             try:
@@ -4136,7 +4371,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 if shared_cover and eligible and metadata.get('cover'):
                     shared_key = f'rabbit_plugins:series-cover:{target["library_id"]}:{_series_title_key(target["series_name"])}'
                     cover_path = download_cover_from_url(
-                        shared_key, metadata['cover'], force=True, library_id=target['library_id'])
+                        shared_key, metadata['cover'], force=True, library_id=target['library_id'],
+                        series_name=target['series_name'])
                     if cover_path:
                         for row in eligible:
                             if cover_updated_sql != 'NULL':
@@ -4167,14 +4403,16 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                             cover_url = metadata.get('cover', '')
                         if not cover_url:
                             continue
-                        cover_path = downloaded_covers.get(cover_url)
+                        display_key = (cover_url, row.get('title') or row.get('file_path'))
+                        cover_path = downloaded_covers.get(display_key)
                         if not cover_path:
                             cover_key = f'rabbit_plugins:url-cover:{cover_url}'
                             cover_path = download_cover_from_url(
                                 cover_key, cover_url, force=cover_overwrite,
-                                library_id=target['library_id'])
+                                library_id=target['library_id'], series_name=target['series_name'],
+                                book_title=row.get('title') or row.get('file_path'))
                             if cover_path:
-                                downloaded_covers[cover_url] = cover_path
+                                downloaded_covers[display_key] = cover_path
                         if cover_path:
                             if cover_updated_sql != 'NULL':
                                 gateway.execute(
@@ -4192,7 +4430,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                         cover_key = f'rabbit_plugins:url-cover:{metadata["cover"]}'
                         cover_path = download_cover_from_url(
                             cover_key, metadata['cover'],
-                            force=cover_overwrite, library_id=target['library_id'])
+                            force=cover_overwrite, library_id=target['library_id'],
+                            series_name=target['series_name'], book_title=row.get('title') or row.get('file_path'))
                         if cover_path:
                             if cover_updated_sql != 'NULL':
                                 gateway.execute(
@@ -4493,6 +4732,9 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                         stats = self._auto_collect(db_type, dict(payload or {}))
                 else:
                     stats = self._auto_collect(db_type, dict(payload or {}))
+                if payload.get('_rabbit_allow_overwrite'):
+                    stats['links_restored'] = _reconcile_external_links(
+                        self, db_type, payload.get('library_id'))
             return {
                 'success': True,
                 'completed': True,
@@ -4524,6 +4766,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         return self._queue_auto_collect(db_type, event)
 
     def run_context_menu_action(self, db_type, action_id, context):
+        if action_id == 'save_series_banner':
+            return self._save_series_banner(db_type, context)
         if action_id == 'optimize_series_db':
             if not has_request_context() or session.get('role') != 'admin':
                 return {'success': False, 'error': '관리자만 Series.db를 최적화할 수 있습니다.'}
@@ -4654,6 +4898,76 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             'warnings': ['현재 DB에 cover_artist 컬럼이 없어 그림작가 변경은 저장하지 못했습니다.']
             if not cover_artist_supported and artist_changed else [],
         }
+
+    def _save_series_banner(self, db_type, context):
+        if not has_request_context() or session.get('role') != 'admin':
+            return {'success': False, 'error': '관리자만 배너를 수정할 수 있습니다.'}
+        if db_type not in ('general', 'adult'):
+            return {'success': False, 'error': '지원하지 않는 서재입니다.'}
+        series_name = str(context.get('series_name') or '').strip()
+        try:
+            library_id = int(context.get('library_id'))
+        except (TypeError, ValueError):
+            library_id = 0
+        if not series_name or library_id < 1:
+            return {'success': False, 'error': '시리즈와 라이브러리를 확인해 주세요.'}
+
+        remove = context.get('remove_banner') is True
+        image_data = context.get('banner_data') or ''
+        if not isinstance(image_data, str):
+            return {'success': False, 'error': '배너 이미지 형식이 올바르지 않습니다.'}
+        if remove == bool(image_data):
+            return {'success': False, 'error': '배너 교체 또는 제거 작업을 하나만 선택해 주세요.'}
+        gateway = self.get_db_gateway(db_type)
+        book = gateway.fetch_one(
+            'SELECT id FROM books WHERE series_name = ? AND library_id = ? '
+            'AND COALESCE(is_deleted, 0) = 0 LIMIT 1', (series_name, library_id))
+        if not book:
+            return {'success': False, 'error': '수정할 시리즈를 찾을 수 없습니다.'}
+
+        banner_path = None
+        if not remove:
+            import base64
+            import io
+            from PIL import Image, ImageOps
+            from services.cover_storage_service import get_covers_dir
+
+            match = re.fullmatch(r'data:image/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)', image_data)
+            if not match or len(match.group(2)) > 14 * 1024 * 1024:
+                return {'success': False, 'error': '10MB 이하의 JPG, PNG, WebP 이미지를 선택해 주세요.'}
+            try:
+                raw = base64.b64decode(match.group(2), validate=True)
+                if len(raw) > 10 * 1024 * 1024:
+                    raise ValueError('image too large')
+                with Image.open(io.BytesIO(raw)) as image:
+                    if image.format.lower() != match.group(1):
+                        raise ValueError('image format mismatch')
+                    if image.width < 1 or image.height < 1 or image.width * image.height > 25_000_000:
+                        raise ValueError('image dimensions invalid')
+                    converted = ImageOps.exif_transpose(image).convert('RGB')
+            except (ValueError, OSError, Image.DecompressionBombError):
+                return {'success': False, 'error': '이미지 파일을 읽을 수 없거나 허용 크기를 초과했습니다.'}
+
+            target_dir = Path(get_covers_dir()) / str(library_id)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.md5(f'{db_type}:{library_id}:{series_name}'.encode('utf-8')).hexdigest()
+            filename = f'banner_{digest}.webp'
+            banner_path = f'{library_id}/{filename}'
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=target_dir, suffix='.webp', delete=False) as file:
+                    temporary = file.name
+                converted.save(temporary, format='WEBP', quality=88)
+                os.replace(temporary, target_dir / filename)
+            finally:
+                if temporary and os.path.exists(temporary):
+                    os.unlink(temporary)
+
+        gateway.execute(
+            'UPDATE books SET banner_image = ?, banner_updated_at = ? '
+            'WHERE series_name = ? AND library_id = ? AND COALESCE(is_deleted, 0) = 0',
+            (banner_path, datetime.now().isoformat(timespec='microseconds'), series_name, library_id))
+        return {'success': True, 'banner_image': banner_path or ''}
 
     def _home_recently_added(self, db_type, limit=20):
         if not has_request_context() or not session.get('user_id'):
@@ -4951,6 +5265,9 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 stored_dates = _read_series_dates(gateway, _series_dates_key(target['library_id'], target['series_name']))
             except (ValueError, TypeError):
                 stored_dates = {}
+            is_standalone = (len(files) == 1 and (
+                stored_dates.get('standalone') is True
+                or _local_standalone_marker(files[0].get('file_path'))))
             if publication_status == '1' and stored_dates.get('publication_status_label') == '연재중단':
                 comicinfo['publication_status_label'] = '연재중단'
             for key in ('start', 'end'):
@@ -4963,6 +5280,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             return {
                 'success': True, 'files': visible_files, 'comicinfo': comicinfo,
                 'localized_series': localized_series, 'publication_dates': publication_dates,
+                'is_standalone': is_standalone,
                 'publication_coverage': _chapter_file_coverage(files, stored_dates.get('total_chapters')),
                 'manual_chapter_count': stored_dates.get('manual_chapter_count'),
                 'support_summary_html': support_summary_html, 'exclude_tags': exclude_tags,

@@ -26,6 +26,8 @@
   let summaryHtmlEnabled = false;
   let excludedGenres = new Set();
   let excludedTags = new Set();
+  let detailDataReady = false;
+  let detailDataFailed = false;
   let contentKind = '';
   let metadataSources = [];
   let metadataAutoEnabled = false;
@@ -835,7 +837,12 @@
     const normalizeRating = (value) => Math.max(0, Math.min(5, Math.round(num(value) * 2) / 2));
     let api;
     const star = (filled) => {
-      const element = node('i', 'fa-' + (filled ? 'solid' : 'regular') + ' fa-star');
+      const element = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      element.setAttribute('class', 'fa-' + (filled ? 'solid' : 'regular') + ' ds-rating-star');
+      element.setAttribute('viewBox', '0 0 24 24');
+      const shape = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      shape.setAttribute('d', 'M12 2 15 8.5 22 9.3 17 14.2 18.3 21 12 17.6 5.7 21 7 14.2 2 9.3 9 8.5Z');
+      element.append(shape);
       element.setAttribute('aria-hidden', 'true');
       return element;
     };
@@ -1176,7 +1183,34 @@
     }));
   }
 
+  function isStandalone() {
+    const volume = Number(meta.comicinfo_volume);
+    return meta.is_standalone === true || (!hasChapterMetadata()
+      && Number(meta.comicinfo_count) === 1
+      && (volume === 1 || volume === 100000)
+      && String(meta.comicinfo_format || '').trim().toLowerCase() === 'special');
+  }
+
   function renderInfo() {
+    if (!detailDataReady) {
+      const facts = $('[data-facts]');
+      facts.replaceChildren(node('dd', 'ds-detail-loading', detailDataFailed
+        ? '상세정보를 불러오지 못했습니다.' : '상세정보를 불러오는 중입니다.'));
+      $('[data-genres-block]').hidden = true;
+      $('[data-tags-block]').hidden = true;
+      $('[data-site-links]').hidden = true;
+      if (detailDataFailed) {
+        const retry = node('button', 'ds-text-button', '다시 시도');
+        retry.type = 'button';
+        retry.addEventListener('click', async () => {
+          detailDataFailed = false;
+          renderInfo();
+          await loadDetailData();
+        });
+        facts.append(retry);
+      }
+      return;
+    }
     const formats = [...new Set(books.map((book) => String(book.file_format || '').trim().toUpperCase()).filter(Boolean))];
     const count = Number(meta.comicinfo_count) || 0;
     const volume = Number(meta.comicinfo_volume) || 0;
@@ -1213,7 +1247,8 @@
         && !coverage.missing;
       const remoteCoverage = meta.publication_coverage || {};
       const incomplete = explicitStatus === '완결' && remoteCoverage.known && remoteCoverage.missing > 0;
-      const status = incomplete
+      const standalone = isStandalone();
+      const status = standalone ? '단편' : incomplete
         ? '누락 (' + remoteCoverage.present + '/' + remoteCoverage.total + '화)'
         : hasExplicitStatus
         ? explicitStatus
@@ -1232,8 +1267,10 @@
                 ? '완결'
                 : '누락 (' + (availableVolumeCount || books.length) + '/' + count + '권)')
             : volume > 0 ? '연재' : '알 수 없음';
-      if (contentKind === 'book') {
-        const published = meta.release_date || books.find((book) => book.release_date)?.release_date;
+      if (contentKind === 'book' || standalone) {
+        if (standalone && contentKind !== 'book') rows.push(['연재상태', '단편']);
+        const published = meta.release_date || books.find((book) => book.release_date)?.release_date
+          || meta.document_publication_date || meta.publication_dates?.start;
         rows.push(['출간일', published ? String(published).slice(0, 10) : '—']);
       } else {
         rows.push(['연재상태', status]);
@@ -1655,6 +1692,8 @@
     }
     editFields();
     form.reset();
+    $('[data-banner-field]').hidden = media;
+    $('[data-banner-remove-field]').hidden = media || !meta.banner_image;
     for (const [key] of activeEditFields()) {
       if (!form.elements[key]) continue;
       const value = key === 'books_lv'
@@ -1729,6 +1768,14 @@
       return notify('표지는 10MB 이하의 JPG, PNG, WebP 파일을 선택해 주세요.', true);
     }
     if (!file?.size) data.delete('cover_image');
+    const bannerFile = data.get('banner_image');
+    const removeBanner = data.get('remove_banner') === '1';
+    if (bannerFile?.size && (bannerFile.size > 10 * 1024 * 1024 || !['image/jpeg', 'image/png', 'image/webp'].includes(bannerFile.type))) {
+      return notify('배너는 10MB 이하의 JPG, PNG, WebP 파일을 선택해 주세요.', true);
+    }
+    if (bannerFile?.size && removeBanner) return notify('배너 교체와 제거 중 하나만 선택해 주세요.', true);
+    data.delete('banner_image');
+    data.delete('remove_banner');
     const links = split(data.get('link'));
     if (links.some((link) => {
       try { return !['http:', 'https:'].includes(new URL(link).protocol); }
@@ -1741,6 +1788,12 @@
     all('[data-edit-form] button, [data-edit-form] input, [data-edit-form] textarea, [data-edit-form] select')
       .forEach((element) => { element.disabled = true; });
     try {
+      const bannerData = bannerFile?.size ? await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('배너 파일을 읽지 못했습니다.'));
+        reader.readAsDataURL(bannerFile);
+      }) : '';
       await request('/api/media/detail/edit', { method: 'POST', body: data });
       if (!root.isConnected) return;
       if (data.has('books_lv')) {
@@ -1753,6 +1806,7 @@
       }
       let detailFieldsError = '';
       let detailFieldsWarning = '';
+      let bannerError = '';
       let coverArtistSaved = true;
       if (type === 'general' || type === 'adult') {
         try {
@@ -1795,6 +1849,23 @@
           end: String(data.get('publication_end_date') || meta.publication_dates?.end || ''),
         };
       }
+      if ((bannerData || removeBanner) && (type === 'general' || type === 'adult')) {
+        try {
+          const bannerResult = await request('/api/media/context-menu/book/plugins/action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              plugin_id: 'rabbit_plugins', action_id: 'save_series_banner', type,
+              context: { series_name: meta.series_name || context.seriesName,
+                library_id: libraryId, banner_data: bannerData,
+                remove_banner: removeBanner },
+            }),
+          });
+          meta.banner_image = bannerResult.banner_image;
+        } catch (error) {
+          bannerError = error.message;
+        }
+      }
       meta.summary = String(data.get('summary') || '');
       meta.metadata_locked = type === 'audiobook' ? 0 : 1;
       dirty = false;
@@ -1821,9 +1892,10 @@
       loadDiscovery({ refresh: true });
       notify(detailFieldsError
         ? '나머지 메타정보는 저장했지만 그림작가와 연재일을 저장하지 못했습니다. ' + detailFieldsError
+        : bannerError ? '나머지 메타정보는 저장했지만 배너를 저장하지 못했습니다. ' + bannerError
         : detailFieldsWarning ? '일부 상세정보는 저장했지만 그림작가 변경은 저장하지 못했습니다. ' + detailFieldsWarning
         : refreshed ? '시리즈 메타정보를 저장했습니다.' : '저장은 완료했습니다. 최신 표지는 페이지를 다시 열면 확인할 수 있습니다.',
-      Boolean(detailFieldsError || detailFieldsWarning));
+      Boolean(detailFieldsError || detailFieldsWarning || bannerError));
     } catch (error) {
       if (root.isConnected) notify('저장하지 못했습니다. 입력 내용은 유지됩니다. ' + error.message, true);
     } finally {
@@ -1833,10 +1905,13 @@
     }
   }
 
-  async function loadDetailData(render = true) {
-    if (!books.length) return false;
+  async function loadDetailData(render = true, preparedData = null) {
+    if (!books.length) {
+      detailDataReady = true;
+      return true;
+    }
     try {
-      const data = await request(apiUrl('files'));
+      const data = preparedData || await request(apiUrl('files'));
       if (!root.isConnected) return;
       summaryHtmlEnabled = data.support_summary_html === true;
       excludedGenres = excludedTerms(data.exclude_genres);
@@ -1881,6 +1956,7 @@
       meta.tags = cleanTerms.tags;
       applyContentRating(data.files || []);
       const comicinfo = data.comicinfo || {};
+      meta.document_publication_date = comicinfo.date || '';
       meta.localized_series = meta.localized_series || data.localized_series || comicinfo.localized_series || '';
       if (summaryHtmlEnabled && !hasStoredSummary(meta.summary) && String(comicinfo.summary || '').trim()) {
         meta.summary = comicinfo.summary;
@@ -1892,22 +1968,27 @@
       meta.comicinfo_count = comicinfo.count;
       meta.comicinfo_volume = comicinfo.volume;
       meta.comicinfo_number = comicinfo.number;
+      meta.is_standalone = data.is_standalone === true;
       meta.publication_final_volume_found = comicinfo.final_volume_found === true;
       meta.publication_available_volume_count = Number(comicinfo.available_volume_count) || 0;
       const storedPublicationStatus = String(meta.publication_status ?? '').trim();
       meta.publication_status_label = ['0', '1', '2'].includes(storedPublicationStatus)
         ? (meta.publication_status_label || '')
         : (comicinfo.publication_status_label || meta.publication_status_label || '');
-      meta.publication_dates = data.publication_dates || {};
+      meta.publication_dates = { ...(meta.publication_dates || {}), ...(data.publication_dates || {}) };
       meta.publication_coverage = data.publication_coverage || {};
       meta.manual_chapter_count = data.manual_chapter_count || '';
       canEdit = type !== 'video' && data.can_edit === true;
       editScope = data.edit_scope;
       libraryName = data.library_name || '';
       libraryId = data.library_id ?? context.libraryId ?? null;
+      detailDataReady = true;
+      detailDataFailed = false;
       if (render) renderHeader();
       return true;
     } catch (error) {
+      detailDataFailed = true;
+      if (root.isConnected && !detailDataReady) renderInfo();
       if (root.isConnected) notify('추가 상세 정보를 확인하지 못했습니다. ' + error.message, true);
       return false;
     }
@@ -2074,7 +2155,7 @@
   }
 
   function activeEditFields() {
-    if (contentKind !== 'book') return fields;
+    if (contentKind !== 'book' && !isStandalone()) return fields;
     return fields.flatMap(([key, label]) => key === 'publication_start_date'
       ? [['release_date', '출간일']]
       : key === 'publication_end_date' ? [] : [[key, label]]);
@@ -2107,8 +2188,14 @@
   }
 
   try {
-    renderHeader();
-    root.dataset.ready = 'true';
+    // Build stars immediately, independently of the slower files/settings request.
+    loadRating();
+    if (context.initialDetailData) {
+      // No await on the prepared path: metadata is applied before first paint.
+      loadDetailData(false, context.initialDetailData);
+      renderHeader();
+      root.dataset.ready = 'true';
+    }
   } catch (error) {
     console.warn('[Rabbit detail] 초기 화면 렌더링을 건너뛰었습니다.', error);
   }
@@ -2187,6 +2274,7 @@
       if (!dirty || window.confirm('저장하지 않은 변경사항을 버릴까요?')) editMode(false);
     });
     $('[data-edit-form]').addEventListener('input', () => { dirty = true; });
+    $('[data-edit-form]').addEventListener('change', () => { dirty = true; });
     $('[data-edit-form]').addEventListener('submit', save);
 
     const stopNavigation = (event) => {
@@ -2250,16 +2338,14 @@
     // Render the data already supplied in the bundle synchronously so the
     // first frame is useful, then enrich it with file-level metadata without
     // showing an empty/blank detail page during the extra request.
-    renderHeader();
-    root.dataset.ready = 'true';
-    const detailLoaded = await loadDetailData(false);
+    const detailLoaded = detailDataReady || await loadDetailData(false);
     if (!root.isConnected) return;
     if (detailLoaded) {
       renderHeader();
     }
+    root.dataset.ready = 'true';
     loadDiscovery();
     startMetadataRefresh();
-    loadRating();
   } catch (error) {
     root.dataset.ready = 'true';
     notify('상세 화면을 불러오지 못했습니다. ' + error.message, true);

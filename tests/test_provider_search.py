@@ -258,6 +258,31 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(merged['metadata']['tags'], '통쾌함, 성장물')
         fetch.assert_called_once_with('139753162')
         self.assertEqual(m._yes24_credits('정복문 저')[0], '정복문')
+        self.assertEqual(m._yes24_credits('kiki 저/킨타 그림/조민경 역'), ('kiki', '킨타'))
+
+    def test_ridi_keywords_exclude_store_terms_and_credits(self):
+        metadata = {'genre': '라이트노벨, 해외 라노벨',
+                    'author': 'kiki', 'cover_artist': '킨타',
+                    'publisher': 'S노벨 플러스'}
+        keywords = ('ebook,전자책,라이트노벨,해외 라노벨,GL/백합,애니화,'
+                    '평점4점이상,별점100개이상,kiki,킨타,S노벨 플러스')
+        self.assertEqual(m._ridi_keyword_tags(keywords, metadata),
+                         'GL/백합, 애니화, 평점4점이상, 별점100개이상')
+
+    def test_ridi_light_novel_category_and_dated_volumes(self):
+        page = ('<script>var bookDetail = {"sub_genre":"lightnovel",'
+                '"genre_name":"만화 e북","category_name":"해외 라노벨",'
+                '"is_series_complete":"1","volume":"1","pub_date":"20240807"};'
+                'var seriesBookListJson = ['
+                '{"title":"작품 1권","volume":"1","open_date":"2024-08-07 06:30:00"},'
+                '{"title":"작품 8권 (완결)","volume":"8",'
+                '"open_date":"2026-08-26 06:30:00"}];</script>')
+        self.assertEqual(m._ridi_genres(page), ['라이트노벨', '해외 라노벨'])
+        dates = m._ridi_publication_metadata(page)
+        self.assertEqual(dates['publication_start_date'], '2024-08-07')
+        self.assertEqual(dates['publication_end_date'], '2026-08-26')
+        self.assertEqual(dates['release_dates_by_volume'],
+                         {'1': '2024-08-07', '8': '2026-08-26'})
 
     def test_type_gates_and_priority(self):
         calls = []
