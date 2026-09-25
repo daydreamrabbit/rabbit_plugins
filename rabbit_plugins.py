@@ -62,7 +62,7 @@ from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '3.3.0'
+PLUGIN_VERSION = '3.3.1'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -5718,14 +5718,15 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 (*query_params, *libraries))
         books_by_title = {}
         books_by_localized = {}
-        target_series_key = _series_title_key(target['series_name'])
         for book in local_books:
             if not visible(book):
                 continue
             # A relation can point to a distinct external edition with the
-            # same native title. Never resolve that relation back to the
-            # current locally owned series (including its other volumes).
-            if _series_title_key(book['series_name']) == target_series_key:
+            # same native title. Exclude only the current library's own
+            # series, not a manga adaptation in another library with the
+            # same Korean title as the novel (or vice versa).
+            if (str(book['library_id']) == str(target['library_id'])
+                    and book['series_name'] == target['series_name']):
                 continue
             for name in (book['series_name'], book['series_alias']):
                 key = _series_title_key(name)
