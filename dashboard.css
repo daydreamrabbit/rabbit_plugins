@@ -167,6 +167,27 @@
   box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
 }
 
+.book-card[data-cover-ratio="16-9"] {
+  align-self: start;
+  height: auto;
+}
+
+.book-card[data-series-cover-ratio="16:9"] {
+  box-sizing: border-box;
+  width: calc(var(--book-card-width, 160px) * 2);
+  flex: 0 0 auto;
+}
+
+.book-card[data-cover-ratio="16-9"][data-series-cover-ratio="16:9"] .book-card-cover {
+  height: calc((var(--book-card-width, 160px) - 2px) * 233 / 160);
+  aspect-ratio: auto;
+}
+
+.book-card[data-cover-ratio="16-9"] .book-card-cover {
+  aspect-ratio: 16 / 9;
+  height: auto;
+}
+
 .book-card-cover {
   position: relative;
   width: 100%;

@@ -39,3 +39,31 @@ class KyoboTests(unittest.TestCase):
    count=len(g.writes)
    r=p.run_context_menu_action('general','save_detail_metadata',{'series_name':'작품','release_date':'2024-02-30'})
    self.assertFalse(r['success']);self.assertEqual(len(g.writes),count)
+
+ def test_manual_blank_fields_survive_embedded_metadata(self):
+  from flask import Flask,session
+  from unittest.mock import patch
+  import json
+  class Gateway:
+   def __init__(self):self.settings={};self.writes=[]
+   def fetch_all(self,*a):return [{'id':1,'library_id':1,'file_path':'book.epub'}]
+   def execute(self,sql,args):self.writes.append((sql,args))
+   def get_setting(self,key,default=None):return {'value':self.settings.get(key,'{}')}
+   def set_setting(self,key,value):self.settings[key]=value
+  p=object.__new__(m.RabbitPluginsMetadataProvider);g=Gateway();p.get_db_gateway=lambda *a:g
+  app=Flask('blank-edit-test');app.secret_key='fixture'
+  with app.test_request_context('/'),patch.object(m,'_optional_column_sql',return_value='b.cover_artist'),patch.object(m,'_comicinfo_metadata',return_value={'artist':'내부 그림작가','count':0,'volume':0}):
+   session['role']='admin'
+   result=p.run_context_menu_action('adult','save_detail_metadata',{
+    'series_name':'작품','cover_artist':'','release_date':'',
+    'manual_fields':{'cover_artist':'','release_date':'','genre':'','summary':'',
+                     'teams':'새 그룹','locations':'','characters':''}})
+   self.assertTrue(result['success'])
+   self.assertEqual(result['manual_empty_fields'],['cover_artist','genre','release_date','summary'])
+   self.assertIn(('UPDATE books SET teams = ? WHERE series_name = ? AND COALESCE(is_deleted, 0) = 0',('새 그룹','작품')),g.writes)
+   self.assertEqual(json.loads(g.settings[m._series_dates_key(1,'작품')])['manual_empty_fields'],result['manual_empty_fields'])
+   result=p.run_context_menu_action('adult','save_detail_metadata',{
+    'series_name':'작품','cover_artist':'새 그림작가','release_date':'2024-01-02',
+    'manual_fields':{'cover_artist':'새 그림작가','release_date':'2024-01-02','genre':'판타지','summary':'소개'}})
+   self.assertTrue(result['success'])
+   self.assertEqual(result['manual_empty_fields'],[])

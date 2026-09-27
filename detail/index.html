@@ -14,6 +14,7 @@
             <i class="fa-solid fa-book-open" aria-hidden="true"></i>
             <span data-read-label>시리즈 읽기</span>
           </button>
+          <button type="button" class="ds-button ds-listen" data-action="listen" aria-label="음성으로 듣기" title="음성으로 듣기" hidden>🎧</button>
           <button type="button" class="ds-button ds-favorite" data-action="favorite" aria-pressed="false" aria-label="즐겨찾기">
             <i class="fa-regular fa-heart" aria-hidden="true"></i>
           </button>
@@ -74,7 +75,10 @@
       <section class="ds-metadata-hold" data-metadata-hold hidden aria-label="자동 메타데이터 수집 보류">
         <div class="ds-metadata-hold-head">
           <div><strong>자동 메타데이터 적용 보류</strong><p>동명 작품 후보의 작가가 달라 직접 확인이 필요합니다.</p></div>
-          <button type="button" class="ds-button" data-action="metadata-search-toggle">후보 확인</button>
+          <div class="ds-metadata-hold-actions">
+            <button type="button" class="ds-button" data-action="metadata-search-toggle">후보 확인</button>
+            <button type="button" class="ds-button ds-primary" data-action="metadata-confirm-same-work">동일 작품</button>
+          </div>
         </div>
         <ul data-metadata-hold-candidates></ul>
       </section>

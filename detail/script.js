@@ -33,6 +33,7 @@
   let metadataAutoEnabled = false;
   let metadataHold = {};
   let metadataFields = [];
+  let manualEmptyFields = new Set();
   let metadataRefreshTimer = null;
   let metadataRefreshAttempts = 0;
   let metadataRefreshInFlight = false;
@@ -299,6 +300,35 @@
     const element = node('i', 'fa-solid fa-' + name);
     element.setAttribute('aria-hidden', 'true');
     return element;
+  }
+
+  function canListenBook(book) {
+    return !media && ['general', 'adult'].includes(String(type).toLowerCase())
+      && typeof window.canListen === 'function'
+      && window.canListen(book?.file_format);
+  }
+
+  function listenToBook(book) {
+    if (!book?.id || !canListenBook(book)) return;
+    if (typeof window.openListen !== 'function') {
+      return notify('음성 듣기 기능을 연결하지 못했습니다. 페이지를 새로고침해 주세요.', true);
+    }
+    window.openListen(Number(book.id), type);
+  }
+
+  function listenButton(book, className, label) {
+    if (!canListenBook(book)) return null;
+    const button = node('button', className);
+    button.type = 'button';
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    button.append(icon('headphones'));
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      listenToBook(book);
+    });
+    return button;
   }
 
   function safeUrl(value, cover = false) {
@@ -932,7 +962,7 @@
 
     const initialRating = normalizeRating(num(meta.score) / 20);
     build(initialRating, false);
-    if (type !== 'general') return;
+    if (type !== 'general' && type !== 'adult') return;
 
     // core/api.js accepts the camelCase context keys.  Passing the old
     // snake_case names made the provider receive an empty series/book scope,
@@ -1031,6 +1061,7 @@
   function bookCard(book, index, linked = false, relationLabel = '') {
     const card = node('article', 'ds-book' + (relationLabel ? ' ds-relation-book' : ''));
     const button = node('button', 'ds-book-open');
+    const coverWrap = node('div', 'ds-book-cover-wrap');
     button.type = 'button';
     const label = linked ? book.display_name || book.series_name || title(book) : fileDisplayLabel(book, index);
     button.setAttribute('aria-label', label + (linked ? ' 상세 보기' : media ? ' 재생' : ' 읽기'));
@@ -1053,6 +1084,11 @@
     // a downloadable format is a real independent link and cannot be
     // swallowed by the reader button.
     button.append(art);
+    coverWrap.append(button);
+    if (!linked) {
+      const listen = listenButton(book, 'ds-book-listen', title(book) + ' 음성으로 듣기');
+      if (listen) coverWrap.append(listen);
+    }
     const titleNode = node('span', 'ds-book-title', label);
     let subtitle = null;
     let progressDisplay = null;
@@ -1060,13 +1096,12 @@
       button.append(titleNode);
       const originalTitle = String(book.localized_series || '').trim();
       if (originalTitle) button.append(node('span', 'ds-book-subtitle', originalTitle));
-      button.addEventListener('click', async () => {
+      button.addEventListener('click', () => {
         if (!allowNavigation()) return;
-        if (book.library_id != null && String(book.library_id) !== String(libraryId)
-          && typeof window.selectCategory === 'function') {
-          await window.selectCategory(String(book.library_id), true);
-        }
         if (typeof window.openBookDetail === 'function') {
+          // openBookDetail accepts the target library directly and preserves
+          // the current detail until the next detail is ready. Calling
+          // selectCategory first briefly reveals the series grid.
           window.openBookDetail(null, book.series_name, book.library_id, book.book_id);
         } else {
           notify('상세페이지 연결을 사용할 수 없습니다.', true);
@@ -1102,7 +1137,7 @@
     if (linked) {
       card.append(button);
     } else {
-      card.append(button, titleNode, subtitle, progressDisplay);
+      card.append(coverWrap, titleNode, subtitle, progressDisplay);
     }
     return card;
   }
@@ -1144,6 +1179,9 @@
       event.stopPropagation();
       read(group.books.find((book) => !completed(book)) || representative, true);
     });
+    const listenTarget = group.books.find((book) => !completed(book) && canListenBook(book))
+      || group.books.find(canListenBook);
+    const listen = listenButton(listenTarget, 'ds-volume-listen', volumeLabel + ' 음성으로 듣기');
 
     const chapters = node('div', 'ds-volume-chapters');
     chapters.hidden = true;
@@ -1164,6 +1202,7 @@
       toggle.setAttribute('aria-expanded', String(!expanded));
     });
     head.append(toggle, reader);
+    if (listen) head.append(listen);
     card.append(head, chapters);
     return card;
   }
@@ -1189,6 +1228,12 @@
       && Number(meta.comicinfo_count) === 1
       && (volume === 1 || volume === 100000)
       && String(meta.comicinfo_format || '').trim().toLowerCase() === 'special');
+  }
+
+  function publicationDate() {
+    if (manualEmptyFields.has('release_date')) return '';
+    return meta.release_date || books.find((book) => book.release_date)?.release_date
+      || meta.document_publication_date || meta.publication_dates?.start || '';
   }
 
   function renderInfo() {
@@ -1240,6 +1285,13 @@
     if (meta.author && meta.author !== '-') rows.push(['글작가', meta.author]);
     const artist = meta.artist || meta.cover_artist;
     if (artist && artist !== '-') rows.push(['그림작가', artist]);
+    if (meta.translator && meta.translator !== '-') rows.push(['번역가', meta.translator]);
+    if (type === 'adult') {
+      for (const [key, label] of [['teams', '그룹'], ['locations', '작품'], ['characters', '캐릭터']]) {
+        const value = String(meta[key] || '').trim();
+        if (value && value !== '-') rows.push([label, value]);
+      }
+    }
     if (meta.publisher && meta.publisher !== '-') rows.push(['출판사', meta.publisher]);
     if (!media) {
       const chapterFinalFound = chapterTarget > 0
@@ -1269,8 +1321,7 @@
             : volume > 0 ? '연재' : '알 수 없음';
       if (contentKind === 'book' || standalone) {
         if (standalone && contentKind !== 'book') rows.push(['연재상태', '단편']);
-        const published = meta.release_date || books.find((book) => book.release_date)?.release_date
-          || meta.document_publication_date || meta.publication_dates?.start;
+        const published = publicationDate();
         rows.push(['출간일', published ? String(published).slice(0, 10) : '—']);
       } else {
         rows.push(['연재상태', status]);
@@ -1569,13 +1620,29 @@
     }
   }
 
+  function detailTitle() {
+    const raw = String(meta.series_alias || meta.series_name || context.seriesName
+      || books[0]?.series_name || books[0]?.title || '').trim();
+    const withoutAuthor = raw.replace(/(?:\s*\[[^\[\]]*\])+\s*$/u, '').trim();
+    // Adult folder names can contain nested or unmatched square brackets.
+    // Keep their text while removing the folder markup from the heading.
+    const display = type === 'adult'
+      ? (withoutAuthor || raw).replace(/[\[\]]/gu, '').replace(/\s+/gu, ' ').trim()
+      : withoutAuthor || raw;
+    return display || '도서 상세';
+  }
+
+  function detailOriginalTitle() {
+    const original = String(meta.localized_series || books.find((book) => book.localized_series)?.localized_series || '').trim();
+    return type === 'adult' ? original.replace(/[\[\]]/gu, '').replace(/\s+/gu, ' ').trim() : original;
+  }
+
   function renderHeader() {
     renderLibraryPath();
-    const displayTitle = String(meta.series_alias || meta.series_name || context.seriesName || '도서 상세')
-      .replace(/(?:\s*\[[^\]]*\])+\s*$/u, '').trim() || '도서 상세';
+    const displayTitle = detailTitle();
     $('[data-title]').textContent = displayTitle;
     renderMetadataHold();
-    const originalTitle = String(meta.localized_series || '').trim();
+    const originalTitle = detailOriginalTitle();
     const originalTitleNode = $('[data-original-title]');
     originalTitleNode.hidden = !originalTitle || originalTitle.toLocaleLowerCase() === String(displayTitle).trim().toLocaleLowerCase();
     originalTitleNode.textContent = originalTitleNode.hidden ? '' : originalTitle;
@@ -1629,6 +1696,19 @@
     favorite.setAttribute('aria-pressed', String(isFavorite));
     favorite.setAttribute('aria-label', isFavorite ? '즐겨찾기 해제' : '즐겨찾기 추가');
     favorite.querySelector('i').className = (isFavorite ? 'fa-solid' : 'fa-regular') + ' fa-heart';
+    const standaloneBook = isStandalone()
+      ? books.find((book) => !completed(book) && canListenBook(book)) || books.find(canListenBook)
+      : null;
+    const listenButtonElement = $('[data-action=listen]');
+    const actionRow = $('.ds-action-row');
+    const canListenStandalone = canListenBook(standaloneBook);
+    listenButtonElement.hidden = !canListenStandalone;
+    actionRow.dataset.hasListen = String(canListenStandalone);
+    listenButtonElement.onclick = canListenStandalone ? (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      listenToBook(standaloneBook);
+    } : null;
 
     const latest = books.map((book) => book.last_read_at || '').sort().at(-1);
     const current = $('[data-current]');
@@ -1673,9 +1753,35 @@
     list.replaceChildren(...candidates.map((candidate) => {
       const source = sourceLabels[candidate?.source] || String(candidate?.source || '제공처');
       const title = String(candidate?.title || '').trim();
-      const author = String(candidate?.author || '작가 미상').trim();
+      let author = String(candidate?.author || '작가 미상').trim();
+      if (candidate?.source === 'yes24') {
+        author = author.replace(/\s+글\s*(?:[·ㆍ/]\s*)?그림$/u, '');
+      }
       return node('li', '', `${source} · ${title} · ${author}`);
     }));
+  }
+
+  async function confirmMetadataSameWork(event) {
+    const button = event.currentTarget;
+    if (!canEdit || button.disabled) return;
+    button.disabled = true;
+    button.textContent = '적용 중...';
+    try {
+      const result = await request('/api/media/context-menu/book/plugins/action', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plugin_id: 'rabbit_plugins', action_id: 'metadata_confirm_same_work', type,
+          context: { book_id: books[0]?.id || meta.id } }),
+      });
+      coverRevision += 1;
+      await loadDetailData();
+      invalidateSeriesList();
+      notify(result.message || '동일 작품의 메타데이터를 적용했습니다.');
+    } catch (error) {
+      notify(error.message || '후보를 적용하지 못했습니다.', true);
+    } finally {
+      button.disabled = false;
+      button.textContent = '동일 작품';
+    }
   }
 
   function editMode(on) {
@@ -1700,11 +1806,15 @@
         ? editContentRatingValue()
         : key === 'link'
         ? split(meta[key]).join(', ')
+        : key === 'cover_artist'
+        ? (manualEmptyFields.has(key) ? '' : meta.cover_artist || meta.artist || '')
+        : key === 'release_date'
+        ? (publicationDate() || '').slice(0, 10)
         : key === 'publication_start_date'
           ? meta.publication_dates?.start || ''
           : key === 'publication_end_date'
             ? meta.publication_dates?.end || ''
-            : meta[key] || '';
+            : meta[key] && meta[key] !== '-' ? meta[key] : '';
       if (key === 'books_lv') {
         const select = form.elements[key];
         for (const option of Array.from(select.options)) if (option.dataset.currentRating) option.remove();
@@ -1763,6 +1873,7 @@
     if (!canEdit || saving) return;
     const form = event.currentTarget;
     const data = new FormData(form);
+    const editingReleaseDate = activeEditFields().some(([key]) => key === 'release_date');
     const file = data.get('cover_image');
     if (file?.size && (file.size > 10 * 1024 * 1024 || !['image/jpeg', 'image/png', 'image/webp'].includes(file.type))) {
       return notify('표지는 10MB 이하의 JPG, PNG, WebP 파일을 선택해 주세요.', true);
@@ -1820,7 +1931,10 @@
               context: {
                 series_name: meta.series_name || context.seriesName,
                 cover_artist: String(data.get('cover_artist') || '').trim(),
-                ...(contentKind === 'book'
+                manual_fields: Object.fromEntries(
+                  [...activeEditFields().map(([key]) => key), 'summary']
+                    .map((key) => [key, String(data.get(key) || '').trim()])),
+                ...(editingReleaseDate
                   ? { release_date: String(data.get('release_date') || '').trim() }
                   : { publication_start_date: String(data.get('publication_start_date') || '').trim(),
                       publication_end_date: String(data.get('publication_end_date') || '').trim() }),
@@ -1829,6 +1943,7 @@
             }),
           });
           coverArtistSaved = result.cover_artist_saved !== false;
+          manualEmptyFields = new Set(result.manual_empty_fields || []);
           detailFieldsWarning = (result.warnings || []).join(' ');
         } catch (error) {
           detailFieldsError = error.message;
@@ -1839,14 +1954,16 @@
         if (key !== 'cover_artist' || (!detailFieldsError && coverArtistSaved)) meta[key] = String(data.get(key) || '');
       }
       if (!detailFieldsError && (type === 'general' || type === 'adult')) {
-        if (contentKind === 'book') {
+        if (editingReleaseDate) {
           meta.release_date = String(data.get('release_date') || '').trim();
           books.forEach((book) => { book.release_date = meta.release_date; });
         }
         meta.manual_chapter_count = String(data.get('manual_chapter_count') || '').trim();
         meta.publication_dates = {
-          start: String(data.get('publication_start_date') || meta.publication_dates?.start || ''),
-          end: String(data.get('publication_end_date') || meta.publication_dates?.end || ''),
+          start: data.has('publication_start_date')
+            ? String(data.get('publication_start_date') || '') : meta.publication_dates?.start || '',
+          end: data.has('publication_end_date')
+            ? String(data.get('publication_end_date') || '') : meta.publication_dates?.end || '',
         };
       }
       if ((bannerData || removeBanner) && (type === 'general' || type === 'adult')) {
@@ -1883,6 +2000,7 @@
       } catch {
         refreshed = false;
       }
+      if (manualEmptyFields.has('cover_artist')) meta.artist = '';
       if (!detailFieldsError && coverArtistSaved && meta.cover_artist && meta.cover_artist !== '-') meta.artist = meta.cover_artist;
       coverRevision += 1;
       invalidateSeriesList();
@@ -1921,6 +2039,14 @@
       metadataAutoEnabled = data.metadata_auto_enabled === true;
       metadataHold = data.metadata_hold || {};
       metadataFields = Array.isArray(data.metadata_fields) ? data.metadata_fields : metadataFields;
+      manualEmptyFields = new Set(Array.isArray(data.manual_empty_fields) ? data.manual_empty_fields : []);
+      // A later manual/provider match may fill a previously cleared field.
+      // Stored values then take precedence over the old empty-field marker.
+      for (const key of ['summary', 'genre', 'tags', 'cover_artist']) {
+        const value = String(meta[key] || '').trim();
+        if (value && value !== '-' && value !== '등록된 설명이 없습니다.') manualEmptyFields.delete(key);
+      }
+      if ((data.files || []).some((file) => file.release_date)) manualEmptyFields.delete('release_date');
       canDownload = data.can_download !== false;
       const currentBooks = new Map(books.map((book) => [Number(book.id), book]));
       for (const file of data.files || []) {
@@ -1945,10 +2071,10 @@
       // genuinely empty.
       const storedGenres = split(meta.genre);
       const storedTags = split(meta.tags);
-      const combinedGenres = (storedGenres.length
+      const combinedGenres = (storedGenres.length || manualEmptyFields.has('genre')
         ? storedGenres
         : (data.files || []).flatMap((file) => split(file.genre)));
-      const combinedTags = (storedTags.length
+      const combinedTags = (storedTags.length || manualEmptyFields.has('tags')
         ? storedTags
         : (data.files || []).flatMap((file) => split(file.tags)));
       const cleanTerms = distinctGenreTags(combinedGenres.join(', '), combinedTags.join(', '));
@@ -1956,14 +2082,23 @@
       meta.tags = cleanTerms.tags;
       applyContentRating(data.files || []);
       const comicinfo = data.comicinfo || {};
-      meta.document_publication_date = comicinfo.date || '';
-      meta.localized_series = meta.localized_series || data.localized_series || comicinfo.localized_series || '';
-      if (summaryHtmlEnabled && !hasStoredSummary(meta.summary) && String(comicinfo.summary || '').trim()) {
+      meta.document_publication_date = manualEmptyFields.has('release_date') ? '' : comicinfo.date || '';
+      meta.series_name = meta.series_name || data.series_name || books[0]?.series_name || '';
+      meta.localized_series = meta.localized_series || data.localized_series || comicinfo.localized_series
+        || books.find((book) => book.localized_series)?.localized_series || '';
+      if (type === 'adult') {
+        for (const key of ['teams', 'locations', 'characters']) {
+          meta[key] = meta[key] || data.adult_detail?.[key] || '';
+        }
+      }
+      if (summaryHtmlEnabled && !manualEmptyFields.has('summary')
+          && !hasStoredSummary(meta.summary) && String(comicinfo.summary || '').trim()) {
         meta.summary = comicinfo.summary;
       }
-      meta.artist = meta.cover_artist && meta.cover_artist !== '-'
+      meta.artist = manualEmptyFields.has('cover_artist') ? '' : meta.cover_artist && meta.cover_artist !== '-'
         ? meta.cover_artist
         : comicinfo.artist || '';
+      meta.translator = comicinfo.translator || '';
       meta.comicinfo_format = comicinfo.format || '';
       meta.comicinfo_count = comicinfo.count;
       meta.comicinfo_volume = comicinfo.volume;
@@ -1996,11 +2131,10 @@
 
   function renderMetadataRefresh() {
     if (!root.isConnected) return;
-    const displayTitle = String(meta.series_alias || meta.series_name || context.seriesName || '도서 상세')
-      .replace(/(?:\s*\[[^\]]*\])+\s*$/u, '').trim() || '도서 상세';
+    const displayTitle = detailTitle();
     const titleNode = $('[data-title]');
     if (titleNode.textContent !== displayTitle) titleNode.textContent = displayTitle;
-    const originalTitle = String(meta.localized_series || '').trim();
+    const originalTitle = detailOriginalTitle();
     const originalTitleNode = $('[data-original-title]');
     const showOriginal = Boolean(originalTitle)
       && originalTitle.toLocaleLowerCase() !== displayTitle.toLocaleLowerCase();
@@ -2155,10 +2289,12 @@
   }
 
   function activeEditFields() {
-    if (contentKind !== 'book' && !isStandalone()) return fields;
-    return fields.flatMap(([key, label]) => key === 'publication_start_date'
+    const base = contentKind !== 'book' && !isStandalone() ? fields : fields.flatMap(([key, label]) => key === 'publication_start_date'
       ? [['release_date', '출간일']]
       : key === 'publication_end_date' ? [] : [[key, label]]);
+    return type === 'adult' ? base.flatMap((field) => field[0] === 'cover_artist'
+      ? [field, ['teams', '그룹'], ['locations', '작품'], ['characters', '캐릭터']]
+      : [field]) : base;
   }
 
   function editFields() {
@@ -2268,6 +2404,7 @@
       editMode(true);
     });
     all('[data-action=metadata-search-toggle]').forEach((button) => button.addEventListener('click', openMetadataSearch));
+    $('[data-action=metadata-confirm-same-work]')?.addEventListener('click', confirmMetadataSameWork);
     $('[data-action=metadata-search-close]').addEventListener('click', closeMetadataSearch);
     $('[data-metadata-search-form]').addEventListener('submit', searchMetadata);
     $('[data-action=cancel-edit]').addEventListener('click', () => {
@@ -2309,6 +2446,29 @@
       event.stopPropagation();
       triggerDownload(target.href);
     };
+    const handleReadingReset = (event) => {
+      const change = event.detail || {};
+      if (change.type !== type || !root.isConnected) return;
+      let changed = false;
+      for (const book of books) {
+        const matches = change.scope === 'series'
+          ? String(change.libraryId) === String(libraryId) && (books.some(item => String(item.id) === String(change.id)) || String(change.seriesName) === String(context.seriesName || meta.series_name || books[0]?.series_name || ''))
+          : String(change.id) === String(book.id);
+        if (!matches) continue;
+        book.pages_read = 0;
+        book.is_completed = 0;
+        book.last_read_at = null;
+        changed = true;
+      }
+      if (changed) renderHeader();
+    };
+    const handleViewerProgress = async (event) => {
+      if (!root.isConnected || (event.detail?.type && event.detail.type !== type)
+          || !books.some(book => String(book.id) === String(event.detail?.bookId))) return;
+      await loadDetailData();
+    };
+    document.addEventListener('viewer-progress-flushed', handleViewerProgress);
+    document.addEventListener('book-reading-reset', handleReadingReset);
     document.addEventListener('click', handleDownloadClick, true);
     document.addEventListener('click', stopNavigation, true);
     document.addEventListener('click', closeMenuOnOutsideClick);
@@ -2320,6 +2480,8 @@
     summaryObserver.observe($('.ds-description'));
     const observer = new MutationObserver(() => {
       if (root.isConnected) return;
+      document.removeEventListener('viewer-progress-flushed', handleViewerProgress);
+      document.removeEventListener('book-reading-reset', handleReadingReset);
       document.removeEventListener('click', handleDownloadClick, true);
       document.removeEventListener('click', stopNavigation, true);
       document.removeEventListener('click', closeMenuOnOutsideClick);

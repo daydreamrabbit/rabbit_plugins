@@ -328,15 +328,17 @@
   }
 })();
 
-(function () {
-  const list = root.querySelector('#rabbit-home-library-sections');
-  const addButton = root.querySelector('#rabbit-add-home-library');
-  const saved = root.querySelector('[name="home_library_sections"]');
+(['general', 'adult']).forEach(function (libraryType) {
+  const adult = libraryType === 'adult';
+  const sectionKey = adult ? 'home_adult_library_sections' : 'home_library_sections';
+  const list = root.querySelector(adult ? '#rabbit-home-adult-library-sections' : '#rabbit-home-library-sections');
+  const addButton = root.querySelector(adult ? '#rabbit-add-home-adult-library' : '#rabbit-add-home-library');
+  const saved = root.querySelector('[name="' + sectionKey + '"]');
   if (!list || !addButton || !saved) return;
 
   let libraries = [];
   let draggedIndex = null;
-  let sections = config.home_library_sections || [];
+  let sections = config[sectionKey] || [];
   if (typeof sections === 'string') {
     try { sections = JSON.parse(sections); } catch (e) { sections = []; }
   }
@@ -386,7 +388,7 @@
     if (!libraries.length) {
       const empty = document.createElement('span');
       empty.className = 'rabbit-home-library-empty';
-      empty.textContent = '사용 가능한 일반 도서 라이브러리가 없습니다.';
+      empty.textContent = `사용 가능한 ${adult ? '성인' : '일반'} 도서 라이브러리가 없습니다.`;
       list.appendChild(empty);
       addButton.disabled = true;
       syncSavedValue();
@@ -474,7 +476,7 @@
     render();
   });
 
-  fetch('/api/media/libraries?type=general&_=' + Date.now(), { cache: 'no-store' })
+  fetch('/api/media/libraries?type=' + libraryType + '&_=' + Date.now(), { cache: 'no-store' })
     .then(response => response.json())
     .then(data => {
       if (!data.success || !Array.isArray(data.libraries)) throw new Error('라이브러리 응답이 올바르지 않습니다.');
@@ -490,7 +492,7 @@
       list.textContent = '라이브러리 목록을 불러오지 못했습니다.';
       addButton.disabled = true;
     });
-})();
+});
 
 (function () {
   const button = root.querySelector('.rabbit-optimize-button');

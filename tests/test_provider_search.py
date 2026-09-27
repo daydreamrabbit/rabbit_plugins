@@ -259,6 +259,8 @@ class ProviderTests(unittest.TestCase):
         fetch.assert_called_once_with('139753162')
         self.assertEqual(m._yes24_credits('정복문 저')[0], '정복문')
         self.assertEqual(m._yes24_credits('kiki 저/킨타 그림/조민경 역'), ('kiki', '킨타'))
+        self.assertEqual(m._yes24_credits('이누요시 아키라 글그림'),
+                         ('이누요시 아키라', '이누요시 아키라'))
 
     def test_ridi_keywords_exclude_store_terms_and_credits(self):
         metadata = {'genre': '라이트노벨, 해외 라노벨',

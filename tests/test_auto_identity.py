@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from flask import Flask, session
 from .. import rabbit_plugins as m
 
 
@@ -36,6 +37,80 @@ class ApplyGateway:
 
 
 class AutoIdentityTests(unittest.TestCase):
+ def test_linked_ridi_volume_outweighs_romanized_store_credit(self):
+  query='기계 인간 마리 + (플러스)'
+  remote={'title':'기계 인간 마리','author':'아키모토 아키',
+          'cover_artist':'아키모토 아키','publisher':'서울미디어코믹스',
+          'summary':'부모 시리즈 소개','isbn':'부모 ISBN','publication_status':'연재',
+          'cover_by_title':{'기계인간마리1권':'base-cover',
+                            '기계인간마리+(플러스)1권':'plus-cover'}}
+  with patch.object(m,'_remote_fetch_metadata',return_value=remote):
+   linked=m._ridi_linked_volume_candidate(query,'https://ridibooks.com/books/845030662')
+   self.assertIsNone(m._ridi_linked_volume_candidate(
+       '다른 작품','https://ridibooks.com/books/845030662'))
+  self.assertEqual(linked['metadata']['cover'],'plus-cover')
+  self.assertNotIn('summary',linked['metadata'])
+  self.assertNotIn('isbn',linked['metadata'])
+  selected=m.RabbitPluginsMetadataProvider._select_auto_candidates(
+      [linked,{'source':'yes24','title':query,'author':'Aki Akimoto'}],
+      query,'manga','single',['ridi','yes24'],author_hint='아키모토 아키')
+  self.assertEqual([item['source'] for item in selected],['ridi'])
+  self.assertEqual(m._metadata_author_cleanup('Aki Akimoto','아키모토 아키','아키모토 아키'),
+                   '아키모토 아키')
+
+ def test_confirm_held_same_work_rechecks_all_sources(self):
+  held=[{'source':'ridi','title':'곰과 토끼는 친구로 지낼 수 없다','author':'이누요시 아키라'},
+        {'source':'naver','title':'곰과 토끼는 친구로 지낼 수 없다 [단행본] (총 2권/미완결)','author':'Akira Inuyoshi'},
+        {'source':'yes24','title':'곰과 토끼는 친구로 지낼 수 없다','author':'이누요시 아키라 글그림'}]
+  fresh=[{'source':'ridi','title':held[0]['title'],'author':held[0]['author']},
+         {'source':'naver','title':held[1]['title'],'url':'https://series.naver.com/1'},
+         {'source':'yes24','title':held[2]['title'],'author':'이누요시 아키라'}]
+  class Gateway:
+   def fetch_one(self,sql,_params=()):
+    if 'FROM books' in sql:
+     return {'id':1,'series_name':held[0]['title'],'library_id':2,
+             'title':held[0]['title']+' 01권','file_path':'/books/01권.cbz'}
+    return {'content_kind':'manga'}
+   def get_setting(self,_key):
+    return {'value':json.dumps({'reason':'author_conflict','query':held[0]['title'],
+                                'candidates':held})}
+  provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  provider.get_db_gateway=lambda *_:Gateway()
+  provider.get_plugin_config=lambda *_:{'metadata_sources':'ridi,naver,yes24'}
+  provider._search_metadata=lambda *_args,**_kwargs:fresh
+  selected=[]
+  provider._merge_metadata_candidates=lambda rows,_kind:(selected.extend(rows) or
+       {'source':'merged','metadata':{'author':'이누요시 아키라'}})
+  provider._apply_metadata=lambda *_args,**_kwargs:(True,'적용 완료')
+  app=Flask(__name__);app.secret_key='test'
+  with app.test_request_context('/'):
+   session['role']='admin'
+   with patch.object(m,'_optional_column_sql',return_value='NULL'),\
+        patch.object(m,'_remote_fetch_metadata',return_value={'author':'Akira Inuyoshi'}):
+    result=provider.run_context_menu_action('general','metadata_confirm_same_work',{'book_id':1})
+  self.assertTrue(result['success'])
+  self.assertEqual([item['source'] for item in selected],['ridi','naver','yes24'])
+
+ def test_adult_uses_shared_conversion_settings(self):
+  provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  def stored(_provider,db_type,default=None):
+   return ({'metadata_publisher_map':'ワニマガジン社 => WANIMAGAZINE'}
+           if db_type=='general' else {})
+  with patch.object(m.BaseMetadataProvider,'get_plugin_config',stored):
+   config=provider.get_plugin_config('adult',{})
+  self.assertEqual(config['metadata_publisher_map'],'ワニマガジン社 => WANIMAGAZINE')
+
+ def test_publisher_rule_updates_existing_value_without_overwrite(self):
+  gateway=ApplyGateway();provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  config={'metadata_overwrite':False,'metadata_collect_cover':False,
+          'metadata_publisher_map':'내부 출판사 => 변경 출판사'}
+  item={'source':'munpia','metadata':{'publisher':'내부 출판사'}}
+  with patch.object(m,'_optional_column_sql',return_value='NULL'):
+   ok,_=provider._apply_metadata(gateway,1,item,config,fields=['publisher'])
+  self.assertTrue(ok)
+  updates=[params for query,params in gateway.updates if query.startswith('UPDATE books SET')]
+  self.assertTrue(any('변경 출판사' in params for params in updates))
+
  def test_quoted_retailer_titles_retry_and_verify_full_work(self):
   query='“너 따위가 마왕을 이길 수 있다고 생각하지 마”라며 용사 파티에서 추방되었으니 왕도에서 멋대로 살고 싶다'
   phrase='너 따위가 마왕을 이길 수 있다고 생각하지 마'

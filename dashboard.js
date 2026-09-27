@@ -1,4 +1,6 @@
 (function (pluginId, shadowRoot, items) {
+  const dbType = (items || []).find(item => item.db_type)?.db_type || window.currentLibraryType || 'general';
+  const coverRatioModule = import('/static/js/series_cover_ratio.js');
   const tabs = shadowRoot.querySelector('[data-role="library-tabs"]');
   const row = shadowRoot.querySelector('[data-role="book-row"]');
   const previous = shadowRoot.querySelector('[data-scroll="left"]');
@@ -7,8 +9,11 @@
 
   const libraries = [];
   const librariesById = new Map();
-  if (Array.isArray(items)) {
-    items.forEach(item => {
+  function groupItems(source) {
+    libraries.splice(0);
+    librariesById.clear();
+    if (!Array.isArray(source)) return;
+    source.forEach(item => {
       if (!item) return;
       if ((item.item_type === 'metric' || item.metric) && item.library_id != null) {
         const library = {
@@ -23,6 +28,7 @@
       }
     });
   }
+  groupItems(items);
   function enableDragScroll(element) {
     let start = null;
     let suppressClick = false;
@@ -125,6 +131,7 @@
     card.dataset.seriesName = seriesName;
     card.dataset.libraryId = libraryId;
     card.dataset.bookId = bookId;
+    coverRatioModule.then(module => module.bindSeriesCoverRatio(card, dbType));
     card.dataset.bookTitle = String(book.title || title);
     card.dataset.displayTitle = String(book.series_alias || seriesName || title);
     card.dataset.fileFormat = String(book.file_format || '');
@@ -216,29 +223,113 @@
     return;
   }
 
-  libraries.forEach((library, index) => {
-    const tab = document.createElement('button');
-    tab.type = 'button';
-    tab.className = 'rabbit-recent-books__tab';
-    tab.id = `rabbit-library-tab-${index}`;
-    tab.setAttribute('role', 'tab');
-    tab.setAttribute('aria-controls', 'rabbit-library-books');
-    tab.setAttribute('aria-selected', index === 0 ? 'true' : 'false');
-    tab.tabIndex = index === 0 ? 0 : -1;
-    tab.dataset.libraryIndex = String(index);
+  function renderTabs() {
+    tabs.replaceChildren();
+    libraries.forEach((library, index) => {
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'rabbit-recent-books__tab';
+      tab.id = `rabbit-library-tab-${index}`;
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-controls', 'rabbit-library-books');
+      tab.setAttribute('aria-selected', index === 0 ? 'true' : 'false');
+      tab.tabIndex = index === 0 ? 0 : -1;
+      tab.dataset.libraryIndex = String(index);
 
-    const name = document.createElement('span');
-    name.textContent = String(library.name || `라이브러리 ${index + 1}`);
-    const count = document.createElement('span');
-    count.className = 'rabbit-recent-books__count';
-    count.textContent = String(Array.isArray(library.books) ? library.books.length : 0);
-    tab.append(name, count);
-    tabs.appendChild(tab);
-  });
+      const name = document.createElement('span');
+      name.textContent = String(library.name || `라이브러리 ${index + 1}`);
+      const count = document.createElement('span');
+      count.className = 'rabbit-recent-books__count';
+      count.textContent = String(Array.isArray(library.books) ? library.books.length : 0);
+      tab.append(name, count);
+      tabs.appendChild(tab);
+    });
+  }
 
   row.id = 'rabbit-library-books';
+  renderTabs();
   selectLibrary(0, false, false);
   row.addEventListener('scroll', updateNavigation, { passive: true });
+
+  // The host refreshes its own new-books row after a scan, but keeps plugin
+  // widgets mounted. Requery only when that row receives a new data snapshot.
+  // Reuse the host's refresh signal instead of opening another SSE connection.
+  const coreNewRow = document.getElementById('dashboard-new-row');
+  const widgetCard = shadowRoot.host.closest('[data-widget-kind="plugin"]');
+  let coreSignature = coreNewRow?.__dashboardSignature || '';
+  let itemsSignature = JSON.stringify(items || []);
+  let refreshTimer = null;
+  let refreshController = null;
+  let refreshSequence = 0;
+  let listObserver = null;
+  let removalObserver = null;
+
+  function disconnectRefresh() {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshController?.abort();
+    listObserver?.disconnect();
+    removalObserver?.disconnect();
+  }
+
+  async function refreshBooks() {
+    if (!shadowRoot.host.isConnected) return disconnectRefresh();
+    refreshController?.abort();
+    const controller = new AbortController();
+    refreshController = controller;
+    const sequence = ++refreshSequence;
+    try {
+      const limit = widgetCard?.dataset.limit || '20';
+      const response = await fetch(`/api/media/dashboard/widgets/${encodeURIComponent(pluginId)}/data?type=${encodeURIComponent(dbType)}&limit=${encodeURIComponent(limit)}`, {
+        cache: 'no-store', credentials: 'same-origin', signal: controller.signal,
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (sequence !== refreshSequence || !shadowRoot.host.isConnected
+          || !data?.success || !Array.isArray(data.items)) return;
+      const signature = JSON.stringify(data.items);
+      if (signature === itemsSignature) return;
+      const previousLibraryId = String(libraries[activeIndex]?.library_id ?? '');
+      const previousScroll = row.scrollLeft;
+      itemsSignature = signature;
+      groupItems(data.items);
+      renderTabs();
+      if (!libraries.length) {
+        const empty = document.createElement('p');
+        empty.className = 'rabbit-recent-books__empty';
+        empty.textContent = '표시할 라이브러리가 없습니다.';
+        row.replaceChildren(empty);
+        previous.disabled = true;
+        next.disabled = true;
+        return;
+      }
+      const nextIndex = Math.max(0, libraries.findIndex(library =>
+        String(library.library_id) === previousLibraryId));
+      selectLibrary(nextIndex, false, false);
+      if (String(libraries[nextIndex].library_id) === previousLibraryId) {
+        row.scrollLeft = previousScroll;
+        updateNavigation();
+      }
+    } catch (error) {
+      if (error.name !== 'AbortError') console.warn('[Rabbit widget] 신규 도서 갱신 실패:', error);
+    }
+  }
+
+  if (coreNewRow && widgetCard?.parentElement && typeof MutationObserver === 'function') {
+    listObserver = new MutationObserver(() => {
+      if (!shadowRoot.host.isConnected) return disconnectRefresh();
+      const nextSignature = coreNewRow.__dashboardSignature || '';
+      if (!coreNewRow.__dashboardReady || !nextSignature.startsWith('general:')
+          || nextSignature === coreSignature) return;
+      coreSignature = nextSignature;
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(refreshBooks, 150);
+    });
+    listObserver.observe(coreNewRow, { childList: true, subtree: true });
+    removalObserver = new MutationObserver(() => {
+      if (!shadowRoot.host.isConnected) disconnectRefresh();
+    });
+    removalObserver.observe(widgetCard.parentElement, { childList: true });
+  }
 
   shadowRoot.addEventListener('click', event => {
     const target = event.target instanceof Element ? event.target : null;

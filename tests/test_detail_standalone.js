@@ -17,4 +17,7 @@ for (const [volume, count, format, chapters, expected] of [
 }
 assert.ok(code.includes("const status = standalone ? '단편' : incomplete"));
 assert.ok(code.includes("if (contentKind === 'book' || standalone)"));
-console.log('PASS standalone detection: normal/sentinel volumes, multi-volume, missing format, chapters');
+assert.ok(code.includes("const listenButtonElement = $('[data-action=listen]')"));
+assert.ok(code.includes("listenButton(book, 'ds-book-listen'"));
+assert.ok(code.includes("listenButton(listenTarget, 'ds-volume-listen'"));
+console.log('PASS standalone detection and TTS entry points: action row, series covers, and volume covers');
