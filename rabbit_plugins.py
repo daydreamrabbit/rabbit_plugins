@@ -62,7 +62,7 @@ from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '4.0.0'
+PLUGIN_VERSION = '4.0.1'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -1477,6 +1477,23 @@ def _comicinfo_metadata(book):
     ))
 
 
+def _detail_file_metadata(book):
+    """Build file detail metadata from the scan database without touching media paths."""
+    return {
+        'artist': str(book.get('cover_artist') or '').strip(),
+        'writer': str(book.get('author') or '').strip(),
+        'translator': '',
+        'format': '',
+        'count': book.get('document_volume_count'),
+        'volume': book.get('document_volume_index'),
+        'number': None,
+        'date': str(book.get('release_date') or '').strip(),
+        'summary': str(book.get('summary') or '').strip(),
+        'localized_series': str(book.get('localized_series') or '').strip(),
+        'publication_status': str(book.get('publication_status') or '').strip(),
+    }
+
+
 def _optional_column_sql(gateway, table, alias, column):
     supported = {
         'books': {
@@ -1597,6 +1614,23 @@ def _series_volume_and_count(entries):
         )
         if match:
             count = _metadata_number(match.group(1), integer_only=True)
+    return volume, count
+
+
+def _row_volume_and_count(row):
+    """Resolve volume labels from persisted data and names without opening media."""
+    volume = _metadata_number(row.get('volume_index'))
+    count = _metadata_number(row.get('volume_count'), integer_only=True)
+    path = str(row.get('file_path') or '').replace('\\', '/')
+    filename = os.path.basename(path) or str(row.get('title_alias') or row.get('title') or '')
+    filename = os.path.splitext(filename)[0]
+    filename_volume, filename_count = _series_volume_and_count([('filename', filename)])
+    volume = volume or filename_volume
+    count = count or filename_count
+    if count is None and re.search(
+            r'(?i)(?:\(|\[|\s)(?:완결|complete|completed|finished|final)(?:\)|\]|\s|$)',
+            filename):
+        count = volume
     return volume, count
 
 
@@ -3181,7 +3215,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         {'key': 'metadata_cover_overwrite', 'label': '기존 표지 덮어쓰기', 'type': 'checkbox', 'default': False},
         {'key': 'metadata_cover_overwrite_kinds', 'label': '기존 표지 덮어쓰기 자료 유형', 'type': 'text', 'default': ''},
     ]
-    detail_view = {'title': 'Rabbit Plugins · 상세페이지', 'sessions': ['general', 'adult', 'audiobook', 'video'], 'initial_data_mode': 'files'}
+    detail_view = {'title': 'Rabbit Plugins · 상세페이지', 'sessions': ['general', 'adult', 'audiobook', 'video']}
     rating_widget = {'title': '성인도서 별점', 'order': 10, 'sessions': ['adult']}
     home_widget = {
         'title': '라이브러리별 신규 도서',
@@ -4094,9 +4128,11 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         artist_sql = _optional_column_sql(gateway, 'books', 'b', 'cover_artist')
         cover_updated_sql = _optional_column_sql(gateway, 'books', 'b', 'cover_updated_at')
         volume_sql = _optional_column_sql(gateway, 'books', 'b', 'document_volume_index')
+        count_sql = _optional_column_sql(gateway, 'books', 'b', 'document_volume_count')
         target = gateway.fetch_one(
             'SELECT b.id, b.series_name, b.library_id, b.file_path, b.cover_image, b.metadata_locked, b.author, b.isbn, '
             'b.publisher, b.summary, b.link, b.genre, b.tags, b.release_date, b.title_alias, '
+            + volume_sql + ' AS volume_index, ' + count_sql + ' AS volume_count, '
             + localized_sql + ' AS localized_series, ' + artist_sql + ' AS cover_artist '
             'FROM books b WHERE b.id = ? AND COALESCE(b.is_deleted, 0) = 0',
             (book_id,))
@@ -4278,7 +4314,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
 
         # Series metadata is shared by all volumes, but locked rows are left intact.
         series_rows = gateway.fetch_all(
-            'SELECT id, title, title_alias, file_path, cover_image, metadata_locked, link, ' + volume_sql + ' AS volume_index '
+            'SELECT id, title, title_alias, file_path, cover_image, metadata_locked, link, '
+            + volume_sql + ' AS volume_index, ' + count_sql + ' AS volume_count '
             'FROM books b WHERE series_name = ? AND library_id = ? '
             'AND COALESCE(is_deleted, 0) = 0 ORDER BY id', (target['series_name'], target['library_id']))
         volume_series = content_kind == 'novel' and any(
@@ -4469,9 +4506,12 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 if overwrite or not existing or (field == 'publication_status' and existing in {'0', '1'}):
                     extra[field] = metadata[field]
             if any(field in selected and metadata.get(field) for field in ('publication_start_date', 'publication_end_date')):
-                info = _comicinfo_metadata(row)
-                volume = info.get('volume') or row.get('volume_index')
-                count = info.get('count')
+                # Do not open each CBZ during metadata application. On a remote
+                # rclone mount even checking whether ComicInfo.xml exists can
+                # block on archive I/O. Use scan-persisted values and filename
+                # labels; if the final volume is unknown, leave its release date
+                # unset rather than synchronously probing the archive.
+                volume, count = _row_volume_and_count(row)
                 dates = []
                 if volume == 1 and 'publication_start_date' in selected and metadata.get('publication_start_date'):
                     dates.append(metadata['publication_start_date'])
@@ -4765,7 +4805,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             query_params.extend(sorted(overwrite_kinds))
         query = (
             'SELECT b.id, b.series_name, b.title, b.title_alias, b.file_path, b.file_format, '
-            'b.file_mtime, b.file_size, b.link, b.library_id FROM books b '
+            'b.file_mtime, b.file_size, b.link, b.library_id, b.author FROM books b '
             'LEFT JOIN libraries l ON l.id = b.library_id '
             'WHERE COALESCE(b.is_deleted, 0) = 0 '
             + ('AND b.library_id = ? ' if library_id else '') +
@@ -4808,8 +4848,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 ),
             )
             search_title, author_hint = _metadata_book_folder_identity(series, content_kind)
-            file_author = (str(_comicinfo_metadata(row).get('writer') or '').strip()
-                           if str(row.get('file_format') or '').casefold() in ('cbz', 'zip') else '')
+            # The scanner has already persisted ComicInfo's writer as books.author.
+            # Reopening every CBZ here makes each scan completion perform duplicate
+            # remote archive I/O, even when the embedded metadata has not changed.
+            file_author = str(row.get('author') or '').strip()
             ebook_code = next(
                 (
                     code for code in (
@@ -5425,7 +5467,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             (book_id, *libraries))
         if not target or not visible(target):
             return {'success': False, 'error': '도서를 찾을 수 없거나 접근 권한이 없습니다.'}
-        target['localized_series'] = _localized_series_value(target)
+        # The scanner has already imported Kavita/ComicInfo series titles into
+        # the books row. Do not reopen the selected archive during a detail API
+        # request just to recover a value that was not persisted.
+        target['localized_series'] = str(target.get('localized_series') or '').strip()
 
         if mode == 'files':
             config = self.get_plugin_config('general', {})
@@ -5438,18 +5483,31 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             exclude_genres = str(config.get('exclude_genres') or '').strip()
             library = gateway.fetch_one('SELECT name FROM libraries WHERE id = ?', (target['library_id'],))
             cover_artist_sql = _optional_column_sql(gateway, 'books', 'b', 'cover_artist')
+            localized_series_sql = _optional_column_sql(gateway, 'books', 'b', 'localized_series')
+            volume_sql = _optional_column_sql(gateway, 'books', 'b', 'document_volume_index')
+            count_sql = _optional_column_sql(gateway, 'books', 'b', 'document_volume_count')
             comicinfo_book = gateway.fetch_one(
                 'SELECT b.file_path, b.file_format, ' + cover_artist_sql + ' AS cover_artist, '
-                'b.file_mtime, b.file_size, b.release_date FROM books b '
+                'b.file_mtime, b.file_size, b.release_date, b.author, b.summary, b.publication_status, '
+                + localized_series_sql + ' AS localized_series, '
+                + volume_sql + ' AS document_volume_index, ' + count_sql + ' AS document_volume_count '
+                'FROM books b '
                 'WHERE b.id = ? AND COALESCE(b.is_deleted, 0) = 0' + permission,
                 (book_id, *libraries))
-            comicinfo = _comicinfo_metadata(comicinfo_book or {})
+            def detail_file_metadata(row):
+                # File-list rendering must not list remote folders or reopen
+                # CBZ/EPUB archives. Scanner-imported values already live in DB;
+                # a per-volume archive probe here stalls mounted libraries.
+                return _detail_file_metadata(row)
+
+            comicinfo = detail_file_metadata(comicinfo_book or {})
             if comicinfo_book and comicinfo_book.get('release_date'):
                 comicinfo['date'] = comicinfo_book['release_date']
             files = gateway.fetch_all(
                 'SELECT b.id, b.file_path, b.file_format, ' + cover_artist_sql + ' AS cover_artist, '
-                + _optional_column_sql(gateway, 'books', 'b', 'document_volume_index') + ' AS document_volume_index, '
-                + _optional_column_sql(gateway, 'books', 'b', 'document_volume_count') + ' AS document_volume_count, '
+                + volume_sql + ' AS document_volume_index, '
+                + count_sql + ' AS document_volume_count, b.author, b.summary, '
+                + localized_series_sql + ' AS localized_series, '
                 'b.file_size, b.file_mtime, b.created_at, '
                 'b.books_lv, b.genre, b.tags, b.release_date, b.publication_status, b.total_pages, '
                 'COALESCE(p.pages_read, 0) AS pages_read, COALESCE(p.is_completed, 0) AS is_completed, p.last_read_at '
@@ -5459,7 +5517,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             files = [row for row in files if visible(row)]
             volume_metadata = []
             for row in files:
-                info = dict(comicinfo) if int(row['id']) == book_id else _comicinfo_metadata(row)
+                info = dict(comicinfo) if int(row['id']) == book_id else detail_file_metadata(row)
                 if row.get('document_volume_index') is not None:
                     info['volume'] = row['document_volume_index']
                 if row.get('document_volume_count') is not None:

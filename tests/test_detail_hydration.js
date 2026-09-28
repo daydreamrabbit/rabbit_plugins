@@ -18,8 +18,11 @@ for (const failed of [false, true]) {
   if (failed) assert.equal(facts.children[1].text,'다시 시도');
 }
 assert.equal((code.match(/loadRating\(\);/g)||[]).length,1);
-assert.ok(code.indexOf('loadRating();') < code.indexOf('const detailLoaded = detailDataReady || await loadDetailData(false)'));
+assert.ok(code.indexOf('loadRating();') < code.indexOf('const detailDataPromise = detailDataReady ? Promise.resolve(true) : loadDetailData(false);'));
 assert.ok(code.includes('const data = preparedData || await request'));
-assert.ok(code.indexOf('loadDetailData(false, context.initialDetailData);') < code.indexOf("root.dataset.ready = 'true'"));
+assert.ok(code.includes('loadDetailData(false, context.initialDetailData);'));
+const detailPromise = code.indexOf('const detailDataPromise = detailDataReady ? Promise.resolve(true) : loadDetailData(false);');
+assert.ok(code.lastIndexOf('loadDiscovery();', detailPromise) >= 0);
+assert.ok(code.lastIndexOf('loadDiscovery();', detailPromise) < detailPromise);
 assert.ok(code.includes("createElementNS('http://www.w3.org/2000/svg', 'svg')"));
 console.log('PASS initial metadata gating, failure retry, independent SVG rating initialization');

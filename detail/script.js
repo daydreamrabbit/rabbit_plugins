@@ -2324,13 +2324,16 @@
   }
 
   try {
-    // Build stars immediately, independently of the slower files/settings request.
+    // Show the title, cover, and volume cards from the core detail response
+    // before loading per-file ComicInfo data. Remote archives can make that
+    // enrichment slow, but it should not delay opening the detail page.
     loadRating();
+    renderHeader();
+    root.dataset.ready = 'true';
     if (context.initialDetailData) {
       // No await on the prepared path: metadata is applied before first paint.
       loadDetailData(false, context.initialDetailData);
       renderHeader();
-      root.dataset.ready = 'true';
     }
   } catch (error) {
     console.warn('[Rabbit detail] 초기 화면 렌더링을 건너뛰었습니다.', error);
@@ -2500,13 +2503,15 @@
     // Render the data already supplied in the bundle synchronously so the
     // first frame is useful, then enrich it with file-level metadata without
     // showing an empty/blank detail page during the extra request.
-    const detailLoaded = detailDataReady || await loadDetailData(false);
-    if (!root.isConnected) return;
-    if (detailLoaded) {
-      renderHeader();
-    }
+    // Recommendations do not depend on the per-file enrichment request.
+    // Start both calls together so a slow mounted-library metadata read cannot
+    // hold the recommendation section (or the detail transition) for a minute.
     root.dataset.ready = 'true';
     loadDiscovery();
+    const detailDataPromise = detailDataReady ? Promise.resolve(true) : loadDetailData(false);
+    const detailLoaded = await detailDataPromise;
+    if (!root.isConnected) return;
+    if (detailLoaded) renderHeader();
     startMetadataRefresh();
   } catch (error) {
     root.dataset.ready = 'true';

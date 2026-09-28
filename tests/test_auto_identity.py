@@ -276,6 +276,41 @@ class AutoIdentityTests(unittest.TestCase):
   provider._auto_collect('general',{'library_id':3})
   self.assertNotIn('l.content_kind, ""), "unspecified") IN',gateway.query)
   self.assertEqual(gateway.params,(3,))
+ def test_auto_collect_uses_scanned_author_without_reopening_cbz(self):
+  class Gateway:
+   def fetch_all(self,query,params=()):
+    if 'SELECT b.id, b.series_name' in query:
+     self.query=query
+     return [{'id':9,'series_name':'작품','title':'작품 01권',
+      'title_alias':'','file_path':'/books/작품 01권.cbz','file_format':'cbz',
+      'file_mtime':'1','file_size':10,'link':'','library_id':7,'author':'내장 작가'}]
+    return []
+   def fetch_one(self,query,params=()):
+    if 'FROM libraries' in query:return {'content_kind':'novel'}
+    return {}
+   def get_setting(self,key,default=None):return default
+   def set_setting(self,key,value):pass
+  gateway=Gateway();provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  provider.get_plugin_config=lambda *_:{'metadata_sources':'ridi',
+   'metadata_fields':'author,summary'}
+  provider.get_db_gateway=lambda *_:gateway
+  provider._refresh_newly_completed_series=lambda *_args,**_kwargs:(set(),0)
+  provider._search_metadata=lambda *_args,**_kwargs:[]
+  with patch.object(m,'_optional_column_sql',return_value='NULL'),\
+       patch.object(m,'_comicinfo_metadata',side_effect=AssertionError('CBZ reopened')):
+   result=provider._auto_collect('general',{'library_id':7})
+  self.assertEqual(result['rows'],1)
+  self.assertIn('b.author FROM books b',gateway.query)
+ def test_metadata_date_assignment_does_not_open_cbz(self):
+  gateway=ApplyGateway();provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  item={'source':'yes24','metadata':{
+   'publication_start_date':'2024-01-01','publication_end_date':'2025-01-01'}}
+  with patch.object(m,'_optional_column_sql',return_value='NULL'),\
+       patch.object(m,'_comicinfo_metadata',side_effect=AssertionError('CBZ reopened')):
+   applied,_=provider._apply_metadata(gateway,1,item,{'metadata_collect_cover':False},
+    fields=['publication_start_date','publication_end_date'])
+  self.assertTrue(applied)
+  self.assertTrue(any('release_date' in query for query,_ in gateway.updates))
  def test_new_book_hook_defers_broad_overwrite_to_completion(self):
   gateway=CaptureGateway();provider=object.__new__(m.RabbitPluginsMetadataProvider)
   provider.get_plugin_config=lambda *_:{'metadata_overwrite':True,'metadata_overwrite_kinds':'novel'}
