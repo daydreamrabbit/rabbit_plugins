@@ -10,7 +10,7 @@ from .. import rabbit_plugins as m
 class OwnedRelationTests(unittest.TestCase):
     def _relations(self, title, native, related_native, localized, relation_field,
                    source_kind='manga', related_kind='manga', target_kind='manga',
-                   target_series_name=None, related_library_id=2):
+                   target_series_name=None, related_library_id=2, related_files=None):
         with tempfile.TemporaryDirectory() as directory:
             index = Path(directory) / 'lookup.sqlite'
             with sqlite3.connect(index) as db:
@@ -30,21 +30,23 @@ class OwnedRelationTests(unittest.TestCase):
             provider._source_series_rows = lambda ids: {1: root} if 1 in ids else {}
             provider._similar_data = lambda *args, **kwargs: {'items': []}
             provider._random_genre_tag_recommendations = lambda *args, **kwargs: []
+            files = related_files or [{
+                'id': 10, 'library_id': related_library_id, 'content_kind': related_kind,
+                'series_name': title, 'series_alias': None, 'localized_series': localized,
+                'cover_image': '', 'cover_updated_at': None, 'volume_index': None,
+                'author': '', 'publisher': '', 'books_lv': '', 'genre': '', 'tags': '',
+                'file_path': '', 'file_format': '', 'file_mtime': None, 'file_size': 0,
+            }]
 
             class Gateway:
                 def fetch_all(self, *_):
-                    return [{'id': 10, 'library_id': related_library_id, 'content_kind': related_kind,
-                             'series_name': title, 'series_alias': None,
-                             'localized_series': localized, 'cover_image': '', 'cover_updated_at': None,
-                             'first_cover': '', 'first_cover_updated_at': None,
-                             'author': '', 'publisher': '', 'books_lv': '', 'genre': '',
-                             'tags': '', 'file_path': '', 'file_format': '',
-                             'file_mtime': None, 'file_size': 0}]
+                    return files
 
             target = {'id': 20, 'series_name': target_series_name or title, 'series_alias': None,
                       'localized_series': localized, 'library_id': 13, 'content_kind': target_kind}
-            return provider._discovery_data(
-                Gateway(), target, '', [], lambda _: True, None, 'general', 10)
+            with patch('services.book_service.get_cover_image_with_t', side_effect=lambda cover, updated: cover):
+                return provider._discovery_data(
+                    Gateway(), target, '', [], lambda _: True, None, 'general', 10)
 
     def test_unowned_relation_without_korean_title_does_not_reuse_current_book(self):
         result = self._relations('나나', 'NANA', 'NANA Fanbook', '', 'relationships_spin_off')
@@ -64,3 +66,26 @@ class OwnedRelationTests(unittest.TestCase):
             source_kind='novel', related_kind='manga', target_kind='novel',
             target_series_name=title + ' [칸자이 유키]')
         self.assertEqual(result['relations']['adaptation'][0]['series_name'], title)
+
+    def test_adaptation_uses_lowest_available_volume_cover_not_first_inserted_cover(self):
+        title = '가끔씩 툭하고 러시아어로 부끄러워하는 옆자리의 아랴 양'
+        native = '時々ボソッとロシア語でデレる隣のアーリャさん'
+        related_files = []
+        for book_id, volume in ((40, 4), (41, 5), (52, 1), (53, 2)):
+            related_files.append({
+                'id': book_id, 'library_id': 19, 'content_kind': 'manga',
+                'series_name': title, 'series_alias': None, 'localized_series': native,
+                'cover_image': f'cover-{volume}.webp', 'cover_updated_at': None,
+                'volume_index': None, 'author': '', 'publisher': '', 'books_lv': '',
+                'genre': '', 'tags': '', 'file_path': f'{title} {volume:02d}권.cbz',
+                'file_format': 'cbz', 'file_mtime': None, 'file_size': 0,
+            })
+
+        result = self._relations(
+            title, native, native, native, 'relationships_adaptation',
+            source_kind='novel', related_kind='manga', target_kind='novel',
+            target_series_name=title + ' [SUN SUN SUN]', related_library_id=19,
+            related_files=related_files)
+        item = result['relations']['adaptation'][0]
+        self.assertEqual(item['cover'], 'cover-1.webp')
+        self.assertEqual(item['book_id'], 52)

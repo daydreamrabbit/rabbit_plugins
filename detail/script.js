@@ -137,6 +137,24 @@
     return metadataNumber(book, 'volume') || metadataNumber(book, 'document_volume_index');
   }
 
+  function seriesVolumeSortNumber(book) {
+    // Use the filename-derived label first: it preserves decimal volumes such
+    // as 4.5 even when a scanned database field contains a rounded integer.
+    const label = fileDisplayLabel(book, 0, { unit: 'volume' });
+    const match = String(label || '').match(/(?:제\s*)?(\d+(?:\.\d+)?)\s*권/iu);
+    if (match) return Number(match[1]) || 0;
+    return volumeNumber(book);
+  }
+
+  function compareSeriesVolumeBooks(a, b) {
+    const aVolume = seriesVolumeSortNumber(a);
+    const bVolume = seriesVolumeSortNumber(b);
+    if (aVolume > 0 && bVolume > 0 && aVolume !== bVolume) return aVolume - bVolume;
+    if (aVolume > 0 && !bVolume) return -1;
+    if (!aVolume && bVolume > 0) return 1;
+    return 0;
+  }
+
   function chapterNumber(book) {
     return metadataNumber(book, 'number') || metadataNumber(book, 'chapter_number');
   }
@@ -164,7 +182,7 @@
   function volumeGroups() {
     const groups = new Map();
     books.forEach((book, index) => {
-      const volume = volumeNumber(book);
+      const volume = seriesVolumeSortNumber(book);
       const key = volume > 0 ? String(volume) : 'book:' + String(book.id || index);
       if (!groups.has(key)) groups.set(key, { volume, books: [] });
       groups.get(key).books.push(book);
@@ -334,7 +352,14 @@
   function safeUrl(value, cover = false) {
     let raw = String(value || '').trim();
     if (!raw) return '';
-    if (cover && !/^(https?:|\/)/i.test(raw)) raw = '/covers/' + raw.replace(/^covers\//, '');
+    if (cover && !/^(https?:|\/\/)/i.test(raw) && !/^\/api\//i.test(raw)
+        && (!raw.startsWith('/') || /^\/covers\//i.test(raw))) {
+      const queryIndex = raw.indexOf('?');
+      const suffix = queryIndex >= 0 ? raw.slice(queryIndex) : '';
+      let path = queryIndex >= 0 ? raw.slice(0, queryIndex) : raw;
+      path = path.replace(/^[\/\\]+/, '').replace(/^covers[\/\\]/i, '');
+      raw = '/covers/' + path.split(/[\/\\]/).map((part) => encodeURIComponent(part)).join('/') + suffix;
+    }
     try {
       const url = new URL(raw, location.origin);
       if (cover && url.origin === location.origin && /^\/covers\//i.test(url.pathname)) {
@@ -1570,7 +1595,11 @@
     }
     const label = type === 'audiobook' ? '트랙' : type === 'video' ? '에피소드' : '권';
     $('[data-series-description]').textContent = books.length + label + ' · 표지를 누르면 ' + (media ? '재생' : '읽기') + '를 시작합니다.';
-    list.replaceChildren(...books.map((book, index) => bookCard(book, index)));
+    const seriesBooks = media ? books : books
+      .map((book, index) => ({ book, index }))
+      .sort((a, b) => compareSeriesVolumeBooks(a.book, b.book) || a.index - b.index)
+      .map(({ book }) => book);
+    list.replaceChildren(...seriesBooks.map((book, index) => bookCard(book, index)));
   }
 
   function renderRelations(relations) {

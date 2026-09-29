@@ -62,7 +62,7 @@ from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '4.0.1'
+PLUGIN_VERSION = '4.0.2'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -4759,6 +4759,31 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         return handled, changed
 
     def _auto_collect(self, db_type, payload):
+        progress_callback = payload.get('_rabbit_progress_callback')
+
+        def report_progress(event, **details):
+            if callable(progress_callback):
+                try:
+                    progress_callback(event, **details)
+                except Exception as progress_error:
+                    print(f'[RabbitPlugins-Metadata] 진행 상태 보고 실패: {progress_error}')
+
+        report_progress('started')
+        has_book_scope = 'book_ids' in payload
+        target_book_ids = []
+        if has_book_scope:
+            seen_book_ids = set()
+            for raw_book_id in payload.get('book_ids') or ():
+                try:
+                    book_id = int(raw_book_id)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if book_id > 0 and book_id not in seen_book_ids:
+                    seen_book_ids.add(book_id)
+                    target_book_ids.append(book_id)
+            if not target_book_ids:
+                report_progress('clear')
+                return {'rows': 0, 'processed': 0, 'matched': 0, 'updated': 0}
         config = self.get_plugin_config(db_type, {}) or {}
         gateway = self.get_db_gateway(db_type)
         library_id = payload.get('library_id')
@@ -4777,6 +4802,9 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             f'COALESCE({artist_sql}, "") = "" OR '
             if artist_sql != 'NULL' else ''
         )
+        scoped_start_date_check = (
+            has_book_scope and 'publication_start_date' in selected_fields
+        )
         missing_condition = (
             'COALESCE(author, "") = "" OR COALESCE(summary, "") = "" OR '
             'COALESCE(isbn, "") = "" OR COALESCE(genre, "") = "" OR '
@@ -4792,8 +4820,14 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             _metadata_overwrite_kinds(config)
             if payload.get('_rabbit_allow_overwrite', True) else set()
         )
+        # Publication dates live in per-series plugin settings, not in the
+        # books row. For a just-scanned scope, fetch only those scanned IDs
+        # and check the saved start date below alongside ordinary DB fields.
+        # This lets a blank start date trigger collection even when ISBN and
+        # the other book columns are already populated.
+        candidate_missing_condition = '1 = 1' if scoped_start_date_check else missing_condition
         target_conditions = [
-            f'(COALESCE(b.metadata_locked, 0) = 0 AND ({missing_condition}))'
+            f'(COALESCE(b.metadata_locked, 0) = 0 AND ({candidate_missing_condition}))'
         ]
         query_params = [library_id] if library_id else []
         if overwrite_kinds is None:
@@ -4803,16 +4837,39 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             target_conditions.append(
                 f'COALESCE(NULLIF(l.content_kind, ""), "unspecified") IN ({placeholders})')
             query_params.extend(sorted(overwrite_kinds))
+        book_scope_sql = ''
+        if has_book_scope:
+            placeholders = ','.join('?' for _ in target_book_ids)
+            book_scope_sql = f'AND b.id IN ({placeholders}) '
+            query_params.extend(target_book_ids)
         query = (
             'SELECT b.id, b.series_name, b.title, b.title_alias, b.file_path, b.file_format, '
-            'b.file_mtime, b.file_size, b.link, b.library_id, b.author FROM books b '
+            'b.file_mtime, b.file_size, b.link, b.library_id, b.author, '
+            f'CASE WHEN ({missing_condition}) THEN 1 ELSE 0 END AS _metadata_missing '
+            'FROM books b '
             'LEFT JOIN libraries l ON l.id = b.library_id '
             'WHERE COALESCE(b.is_deleted, 0) = 0 '
             + ('AND b.library_id = ? ' if library_id else '') +
             'AND (' + ' OR '.join(target_conditions) + ') '
+            + book_scope_sql +
             'ORDER BY b.id DESC LIMIT 80'
         )
         rows = gateway.fetch_all(query, tuple(query_params))
+        if scoped_start_date_check:
+            date_state = {}
+            eligible_rows = []
+            for row in rows:
+                if row.get('_metadata_missing'):
+                    eligible_rows.append(row)
+                    continue
+                date_key = (row.get('library_id'), str(row.get('series_name') or row.get('title') or '').strip())
+                if date_key not in date_state:
+                    saved_dates = _read_series_dates(
+                        gateway, _series_dates_key(date_key[0], date_key[1]))
+                    date_state[date_key] = bool(_metadata_date(saved_dates.get('start')))
+                if not date_state[date_key]:
+                    eligible_rows.append(row)
+            rows = eligible_rows
         print(f'[RabbitPlugins-Metadata] runtime=metadata-v19-overwrite-internal pid={os.getpid()} 자동 수집 대상={len(rows)}권 '
               f'db={db_type} library_id={library_id or "all"} '
               f'sources={",".join(source_order)} fields={",".join(selected_fields)}')
@@ -4822,6 +4879,13 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             item_key = (item_series.casefold(), item.get('library_id'))
             if item_series:
                 series_files.setdefault(item_key, []).append(str(item.get('file_path') or ''))
+        total_series = len({
+            (str(row.get('series_name') or row.get('title') or '').strip().casefold(), row.get('library_id'))
+            for row in rows
+            if str(row.get('series_name') or row.get('title') or '').strip()
+            and str(row.get('series_name') or row.get('title') or '').strip() not in completion_series
+        })
+        report_progress('progress', completed=0, total=total_series, matched=0, updated=0)
         seen = set()
         processed = 0
         matched = 0
@@ -4833,6 +4897,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 continue
             seen.add(key)
             processed += 1
+            report_progress('item_started', book_id=row['id'], title=series,
+                            sources=','.join(source_order))
             content_kind = 'manga'
             try:
                 library = gateway.fetch_one('SELECT content_kind FROM libraries WHERE id = ?', (row['library_id'],))
@@ -4901,6 +4967,9 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                       f'author_hint={author_hint!r} ebook_code={ebook_code or "없음"} '
                       f'sources={selected_sources} '
                       f'applied={applied} message={message}')
+                report_progress('item_result', book_id=row['id'], title=series,
+                                status='applied' if applied else 'skipped',
+                                sources=selected_sources, reason=message or '')
             else:
                 search_query = _metadata_search_query(search_title, config)
                 print(f'[RabbitPlugins-Metadata] series={series!r} 결과 없음 '
@@ -4908,6 +4977,17 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                       f'ebook_code={ebook_code or "없음"} '
                       f'content_kind={content_kind!r} '
                       f'book_type={book_type!r}')
+                report_progress('item_result', book_id=row['id'], title=series,
+                                status='not_matched', sources=','.join(source_order),
+                                reason='자동 적용 조건에 맞는 후보 없음' if not diagnostics else
+                                str(diagnostics[0].get('message') or diagnostics[0].get('reason') or '후보 검증 조건으로 자동 적용 보류'))
+            report_progress(
+                'progress', completed=processed, total=total_series,
+                matched=matched, updated=updated)
+        if total_series == 0 and completion_updated == 0:
+            # Avoid leaving a completed 0/0 activity for a scan that had
+            # nothing eligible for automatic metadata collection.
+            report_progress('clear')
         return {
             'rows': len(rows), 'processed': processed,
             'matched': matched, 'updated': updated + completion_updated,
@@ -4944,9 +5024,12 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                         stats = self._auto_collect(db_type, dict(payload or {}))
                 else:
                     stats = self._auto_collect(db_type, dict(payload or {}))
-                if payload.get('_rabbit_allow_overwrite'):
+                if payload.get('_rabbit_allow_overwrite') and not payload.get('book_ids'):
                     stats['links_restored'] = _reconcile_external_links(
                         self, db_type, payload.get('library_id'))
+                callback = payload.get('_rabbit_progress_callback')
+                if callable(callback):
+                    callback('completed', **stats)
             return {
                 'success': True,
                 'completed': True,
@@ -4954,25 +5037,29 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 'message': '메타데이터 자동 수집을 완료했습니다.',
             }
         except Exception as error:
+            callback = payload.get('_rabbit_progress_callback')
+            if callable(callback):
+                try:
+                    callback('failed')
+                except Exception:
+                    pass
             print(f'[RabbitPlugins-Metadata] 자동 수집 실패 db={db_type}: '
                   f'{type(error).__name__}: {error}')
             return {'success': False, 'error': str(error), 'message': '메타데이터 자동 수집에 실패했습니다.'}
 
     def on_scan_new_books_detected(self, db_type, payload):
-        event = dict(payload or {})
-        # The completion hook performs the potentially broad overwrite pass.
-        # This first hook only fills genuinely missing metadata, preventing
-        # the same complete Kavita/ComicInfo series from being crawled twice
-        # for one scan.
-        event['_rabbit_allow_overwrite'] = False
-        return self._queue_auto_collect(db_type, event)
+        # The scan-completed hook runs for new and existing books alike. Keep
+        # collection there so each scan creates only one metadata search pass.
+        return {
+            'success': True,
+            'skipped': True,
+            'message': '메타데이터 수집은 스캔 완료 훅에서 처리합니다.',
+        }
 
     def on_scan_completed(self, db_type, payload):
-        # Always run the completion pass, including scans that reported new
-        # files.  The core emits the new-book and completion events on separate
-        # workers; if the first event is delayed or fails, skipping here would
-        # leave the newly scanned rows without any automatic collection. This
-        # completion pass also applies explicit existing-value overwrite rules.
+        # Run one metadata pass after every completed scan, including scans
+        # that did not report new files. This also applies configured overwrite
+        # rules and publishes progress to Scan Activity when the core supports it.
         event = dict(payload or {})
         event['_rabbit_allow_overwrite'] = True
         return self._queue_auto_collect(db_type, event)
@@ -6036,17 +6123,14 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 identity_conditions.append(
                     localized_series_sql + ' IN (' + native_placeholders + ')')
                 query_params.extend(native_titles)
+            volume_sql = _optional_column_sql(gateway, 'books', 'b', 'document_volume_index')
             local_books = gateway.fetch_all(
                 'SELECT b.id, b.library_id, ' + content_kind_sql + ' AS content_kind, b.series_name, b.series_alias, '
                 + localized_series_sql + ' AS localized_series, b.cover_image, b.cover_updated_at, '
+                + volume_sql + ' AS volume_index, '
                 'b.author, b.publisher, b.books_lv, b.genre, b.tags, '
-                'b.file_path, b.file_format, b.file_mtime, b.file_size, '
-                'fc.cover_image AS first_cover, fc.cover_updated_at AS first_cover_updated_at '
+                'b.file_path, b.file_format, b.file_mtime, b.file_size '
                 'FROM books b LEFT JOIN libraries l ON l.id = b.library_id '
-                'LEFT JOIN books fc ON fc.id = (SELECT fb.id FROM books fb '
-                'WHERE fb.series_name = b.series_name AND fb.library_id = b.library_id '
-                'AND COALESCE(fb.is_deleted, 0) = 0 AND fb.cover_image IS NOT NULL '
-                "AND fb.cover_image <> '' ORDER BY fb.id ASC LIMIT 1) "
                 'WHERE COALESCE(b.is_deleted, 0) = 0 AND '
                 '(' + ' OR '.join(identity_conditions) + ')' +
                 permission + ' ORDER BY b.id',
@@ -6108,17 +6192,35 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 not bool(book['cover_image']), int(book['id'])))
             book = matches[0]
             same_library = [item for item in matches if str(item['library_id']) == str(book['library_id'])]
+            def representative_volume(item):
+                key = _row_volume_key({
+                    'volume_index': item.get('volume_index'),
+                    'title_alias': item.get('series_alias'),
+                    'title': item.get('series_name'),
+                    'file_path': item.get('file_path'),
+                })
+                try:
+                    value = float(key) if key else float('inf')
+                except (TypeError, ValueError):
+                    value = float('inf')
+                # 100000 is BookOasis's sentinel for a standalone/special item,
+                # not a real volume number in a multi-volume series.
+                return value if 0 < value < 100000 else float('inf')
+
+            representative = min(same_library, key=lambda item: (
+                not bool(item.get('cover_image')),
+                representative_volume(item), int(item['id'])))
             from services.book_service import get_cover_image_with_t
 
             return {
-                'book_id': book['id'], 'series_name': book['series_name'],
+                'book_id': representative['id'], 'series_name': representative['series_name'],
                 'display_name': re.sub(r'\s*\[[^\[\]]+\]\s*$', '',
-                                       book['series_alias'] or book['series_name']).strip(),
-                'localized_series': book['localized_series'] or series.get('native_title', ''),
-                'library_id': book['library_id'],
+                                       representative['series_alias'] or representative['series_name']).strip(),
+                'localized_series': representative['localized_series'] or series.get('native_title', ''),
+                'library_id': representative['library_id'],
                 'cover': get_cover_image_with_t(
-                    book['first_cover'] or book['cover_image'], book.get('first_cover_updated_at')),
-                'author': book['author'], 'publisher': book['publisher'],
+                    representative.get('cover_image'), representative.get('cover_updated_at')),
+                'author': representative['author'], 'publisher': representative['publisher'],
                 'book_count': len(same_library),
             }
 

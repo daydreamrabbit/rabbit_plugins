@@ -4,7 +4,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from flask import Flask, session
 from .. import rabbit_plugins as m
 
@@ -296,11 +296,88 @@ class AutoIdentityTests(unittest.TestCase):
   provider.get_db_gateway=lambda *_:gateway
   provider._refresh_newly_completed_series=lambda *_args,**_kwargs:(set(),0)
   provider._search_metadata=lambda *_args,**_kwargs:[]
+  progress=[]
   with patch.object(m,'_optional_column_sql',return_value='NULL'),\
        patch.object(m,'_comicinfo_metadata',side_effect=AssertionError('CBZ reopened')):
-   result=provider._auto_collect('general',{'library_id':7})
+   result=provider._auto_collect('general',{'library_id':7,
+    '_rabbit_progress_callback':lambda event,**details:progress.append((event,details))})
   self.assertEqual(result['rows'],1)
-  self.assertIn('b.author FROM books b',gateway.query)
+  self.assertIn('b.author, CASE WHEN',gateway.query)
+  self.assertEqual(progress[0][0],'started')
+  self.assertTrue(any(event=='progress' and details.get('completed')==1
+                      for event,details in progress))
+
+ def test_empty_auto_collect_clears_scan_activity(self):
+  provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  provider.get_plugin_config=lambda *_:{'metadata_sources':'ridi'}
+  provider.get_db_gateway=lambda *_:CaptureGateway()
+  provider._refresh_newly_completed_series=lambda *_args,**_kwargs:(set(),0)
+  progress=[]
+  with patch.object(m,'_optional_column_sql',return_value='NULL'):
+   result=provider._auto_collect('general',{'library_id':7,
+    '_rabbit_progress_callback':lambda event,**details:progress.append((event,details))})
+  self.assertEqual(result['processed'],0)
+  self.assertEqual([event for event,_ in progress],['started','progress','clear'])
+
+ def test_batch_scan_auto_collect_is_limited_to_scanned_book_ids(self):
+  gateway=CaptureGateway();provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  provider.get_plugin_config=lambda *_:{'metadata_sources':'ridi'}
+  provider.get_db_gateway=lambda *_:gateway
+  provider._refresh_newly_completed_series=lambda *_args,**_kwargs:(set(),0)
+  provider._auto_collect('general',{'library_id':19,'book_ids':[28677,28678,28677]})
+  self.assertIn('AND b.id IN (?,?)',gateway.query)
+  self.assertEqual(gateway.params[-2:],(28677,28678))
+
+ def test_blank_publication_start_date_triggers_scoped_auto_collect(self):
+  class Gateway(CaptureGateway):
+   def __init__(self,start_date,metadata_missing=0):
+    super().__init__();self.start_date=start_date;self.metadata_missing=metadata_missing
+   def fetch_all(self,query,params=()):
+    self.query=query;self.params=params
+    return [{'id':28677,'series_name':'작품','title':'작품 01권','title_alias':'',
+     'file_path':'/books/작품 01권.epub','file_format':'epub','file_mtime':1,
+     'file_size':10,'link':'','library_id':19,'author':'작가',
+     '_metadata_missing':self.metadata_missing}]
+   def fetch_one(self,query,params=()):
+    if 'FROM libraries' in query:return {'content_kind':'novel'}
+    return {}
+   def get_setting(self,key,default=None):
+    return {'value':json.dumps({'start':self.start_date})}
+   def set_setting(self,*_):pass
+  for start_date,metadata_missing,expected_searches in (
+   ('',0,1),('2026-08-07',0,0),('2026-08-07',1,1)):
+   with self.subTest(start_date=start_date,metadata_missing=metadata_missing):
+    gateway=Gateway(start_date,metadata_missing)
+    provider=object.__new__(m.RabbitPluginsMetadataProvider)
+    provider.get_plugin_config=lambda *_:{
+     'metadata_sources':'ridi','metadata_fields':['publication_start_date'],
+     'metadata_collect_cover':False}
+    provider.get_db_gateway=lambda *_:gateway
+    provider._refresh_newly_completed_series=lambda *_args,**_kwargs:(set(),0)
+    search=Mock(return_value=[])
+    provider._search_metadata=search
+    provider._select_auto_candidates=lambda *_args,**_kwargs:[]
+    provider._auto_collect('general',{'library_id':19,'book_ids':[28677]})
+    self.assertIn('COALESCE(isbn, "") = ""',gateway.query)
+    self.assertEqual(search.call_count,expected_searches)
+
+ def test_targeted_auto_collect_does_not_reconcile_every_library_link(self):
+  provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  provider.get_plugin_config=lambda *_:{'metadata_auto_enabled':True}
+  provider._auto_collect=lambda *_args,**_kwargs:{
+   'rows':1,'processed':1,'matched':1,'updated':1}
+  with patch.object(m,'_reconcile_external_links') as reconcile:
+   result=provider._queue_auto_collect('general',{
+    'library_id':19,'book_ids':[28677], '_rabbit_allow_overwrite':True})
+  self.assertTrue(result['success'])
+  reconcile.assert_not_called()
+
+ def test_new_book_hook_defers_to_single_scan_completion_collection(self):
+  provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  provider._queue_auto_collect=lambda *_args,**_kwargs:(_ for _ in ()).throw(
+   AssertionError('new-book hook must not duplicate the completion collection'))
+  result=provider.on_scan_new_books_detected('general',{'library_id':19})
+  self.assertTrue(result['skipped'])
  def test_metadata_date_assignment_does_not_open_cbz(self):
   gateway=ApplyGateway();provider=object.__new__(m.RabbitPluginsMetadataProvider)
   item={'source':'yes24','metadata':{
