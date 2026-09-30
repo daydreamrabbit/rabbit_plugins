@@ -46,15 +46,15 @@ class PreferenceProvider:
         return self.gateway.config
 
 class CoverPolicyTests(unittest.TestCase):
-    def test_internal_images_never_replaced_even_with_overwrite(self):
+    def test_internal_images_do_not_block_external_cover(self):
         with tempfile.TemporaryDirectory() as folder:
             for ext in ['epub', 'cbz', 'zip']:
                 path=Path(folder)/('book.'+ext)
                 with zipfile.ZipFile(path,'w') as z:
                     z.writestr('images/001.jpg',b'image')
                 row={'file_path':str(path)}
-                self.assertFalse(m._metadata_cover_eligible(row,False,False))
-                self.assertFalse(m._metadata_cover_eligible(row,False,True))
+                self.assertTrue(m._metadata_cover_eligible(row,False,False))
+                self.assertTrue(m._metadata_cover_eligible(row,False,True))
                 self.assertTrue(m._metadata_cover_eligible(row,True,False))
 
     def test_no_internal_image_can_use_external(self):
@@ -64,14 +64,14 @@ class CoverPolicyTests(unittest.TestCase):
                 z.writestr('chapter.xhtml','<p>Text</p>')
             self.assertTrue(m._metadata_cover_eligible({'file_path':str(path)},False,False))
         self.assertTrue(m._metadata_cover_eligible({'file_path':'book.txt'},False,False))
-        self.assertFalse(m._metadata_cover_eligible({'file_path':'unavailable.cbz'},False,True))
+        self.assertTrue(m._metadata_cover_eligible({'file_path':'unavailable.cbz'},False,True))
 
     def test_pdf_without_generated_cover_can_use_external(self):
         row = {'file_path': '/books/서버 관리자.pdf', 'cover_image': None}
         self.assertTrue(m._metadata_cover_eligible(row, False, False))
         row['cover_image'] = 'internal.webp'
         self.assertFalse(m._metadata_cover_eligible(row, False, False))
-        self.assertFalse(m._metadata_cover_eligible(row, False, True))
+        self.assertTrue(m._metadata_cover_eligible(row, False, True))
 
     def test_webtoon_includes_existing_covers_but_respects_locks(self):
         row={'file_path':'book.cbz','cover_image':'old.webp'}
@@ -82,7 +82,7 @@ class CoverPolicyTests(unittest.TestCase):
 
     def test_ridi_volume_cover_can_fill_remote_archive_without_opening_it(self):
         row = {'file_path': '/remote/book 01.cbz', 'cover_image': ''}
-        self.assertFalse(m._metadata_cover_eligible(row, False, False))
+        self.assertTrue(m._metadata_cover_eligible(row, False, False))
         self.assertTrue(m._metadata_cover_eligible(
             row, False, False, source='ridi', per_volume=True))
         row['cover_image'] = '1/book_existing.webp'

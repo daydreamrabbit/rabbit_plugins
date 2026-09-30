@@ -2353,16 +2353,11 @@
   }
 
   try {
-    // Show the title, cover, and volume cards from the core detail response
-    // before loading per-file ComicInfo data. Remote archives can make that
-    // enrichment slow, but it should not delay opening the detail page.
+    // Start independent rating work, but do not reveal provisional metadata.
     loadRating();
-    renderHeader();
-    root.dataset.ready = 'true';
     if (context.initialDetailData) {
       // No await on the prepared path: metadata is applied before first paint.
       loadDetailData(false, context.initialDetailData);
-      renderHeader();
     }
   } catch (error) {
     console.warn('[Rabbit detail] 초기 화면 렌더링을 건너뛰었습니다.', error);
@@ -2528,19 +2523,14 @@
     observer.observe(container.parentNode || document.body, { childList: true, subtree: true });
 
     bindBookMenu($('.ds-cover'), books[0]);
-    // The core now switches to this view only after the bundle is inserted.
-    // Render the data already supplied in the bundle synchronously so the
-    // first frame is useful, then enrich it with file-level metadata without
-    // showing an empty/blank detail page during the extra request.
-    // Recommendations do not depend on the per-file enrichment request.
-    // Start both calls together so a slow mounted-library metadata read cannot
-    // hold the recommendation section (or the detail transition) for a minute.
-    root.dataset.ready = 'true';
+    // Fetch recommendations independently; reveal the header only after the
+    // DB-backed detail data has established labels, filters and permissions.
     loadDiscovery();
     const detailDataPromise = detailDataReady ? Promise.resolve(true) : loadDetailData(false);
     const detailLoaded = await detailDataPromise;
     if (!root.isConnected) return;
-    if (detailLoaded) renderHeader();
+    renderHeader();
+    root.dataset.ready = 'true';
     startMetadataRefresh();
   } catch (error) {
     root.dataset.ready = 'true';

@@ -26,3 +26,7 @@ assert.ok(code.lastIndexOf('loadDiscovery();', detailPromise) >= 0);
 assert.ok(code.lastIndexOf('loadDiscovery();', detailPromise) < detailPromise);
 assert.ok(code.includes("createElementNS('http://www.w3.org/2000/svg', 'svg')"));
 console.log('PASS initial metadata gating, failure retry, independent SVG rating initialization');
+const initialRender = code.slice(code.indexOf('  try {\n    // Start independent rating work'));
+assert.ok(initialRender.indexOf("root.dataset.ready = 'true'") > initialRender.indexOf('await detailDataPromise'));
+assert.ok(!initialRender.slice(0, initialRender.indexOf('const { state }')).includes('renderHeader();'));
+assert.match(initialRender, /await detailDataPromise;[\s\S]*?renderHeader\(\);\s*root.dataset.ready = 'true'/);

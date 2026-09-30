@@ -62,7 +62,7 @@ from flask import has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '4.0.2'
+PLUGIN_VERSION = '4.0.3'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -534,23 +534,13 @@ def _commit_external_cover(gateway, row, cover_path, overwrite, timestamp=True):
 
 
 def _metadata_cover_eligible(row, webtoon, overwrite, source='', per_volume=False):
+    # Metadata matching selects the external URL; archive contents do not
+    # determine eligibility and must not trigger remote reads here.
     if int(row.get('metadata_locked') or 0) == 1 and not overwrite:
         return False
     if webtoon:
         return True
-    # A PDF has a renderable first page, but BookOasis may not have generated
-    # its cover yet (for example after a remote or deferred scan). An external
-    # cover can fill that genuinely empty slot. Keep an existing cover intact.
-    if Path(str(row.get('file_path') or '')).suffix.casefold() == '.pdf':
-        return not row.get('cover_image')
-    if source == 'ridi' and per_volume:
-        # A remote archive is deliberately treated as having an internal
-        # cover because checking it would open the remote file.  Ridi's
-        # volume list gives us an exact cover without that I/O, so allow it
-        # when this row has no saved cover. Existing covers still follow the
-        # administrator's overwrite setting.
-        return overwrite or not row.get('cover_image')
-    return not _metadata_internal_cover(row) and (overwrite or not row.get('cover_image'))
+    return overwrite or not row.get('cover_image')
 
 
 def _metadata_cover_enabled(config, content_kind):
@@ -849,55 +839,19 @@ def _metadata_keyword_list(value):
 
 
 def _metadata_search_query(value, config):
-    """Apply configured keep/remove terms before querying metadata providers.
+    """Remove only explicitly configured terms; preserve title parentheses.
 
-    Keep terms are protected first, so a broad remove term cannot remove a
-    deliberately preserved title part.  This mirrors Comic Book Butler's
-    remove/preserve behavior while keeping the plugin setting a simple text
-    field.
+    The legacy keep-key storage now backs the special-exclusion field.
+    Both exclusion lists use literal, case-insensitive matching.
     """
     text = re.sub(r'\s+', ' ', str(value or '')).strip()
-    if not text:
-        return ''
-    keep = sorted(_metadata_keyword_list(config.get('metadata_search_keep_keywords')), key=len, reverse=True)
-    keep_keys = {term.casefold() for term in keep}
-    remove = sorted(
-        (term for term in _metadata_keyword_list(config.get('metadata_search_remove_keywords'))
-         if term.casefold() not in keep_keys),
-        key=len, reverse=True)
-    protected = {}
-    for index, term in enumerate(keep):
-        marker = f' rabbitpluginskeep{index} '
-        protected[marker] = term
-        text = re.sub(re.escape(term), marker, text, flags=re.IGNORECASE)
-
-    # File names and release labels often append a source marker such as
-    # ``[SUN SUN SUN]`` or ``[1080x]``.  Those markers are not part of the
-    # work title and should not be sent to providers.  Remove only outer
-    # bracket groups so a legitimate bracketed phrase in the middle of a
-    # title remains searchable.  A configured keep term remains protected.
-    bracket_group = r'(?:\[[^\[\]]+\]|【[^【】]+】|\([^()]+\)|（[^（）]+）|\{[^{}]+\})'
-    for _ in range(4):
-        before = text
-        leading = re.match(rf'^\s*({bracket_group})\s*', text)
-        if leading and 'rabbitpluginskeep' not in leading.group(1).casefold():
-            text = text[leading.end():]
-        trailing = re.search(rf'\s*({bracket_group})\s*$', text)
-        if trailing and 'rabbitpluginskeep' not in trailing.group(1).casefold():
-            text = text[:trailing.start()]
-        if text == before:
-            break
-
-    for term in remove:
-        escaped = re.escape(term.strip('[](){}【】（）'))
-        for left, right in (('[', ']'), ('【', '】'), ('(', ')'), ('（', '）'), ('{', '}')):
-            text = re.sub(
-                rf'\s*{re.escape(left)}\s*{escaped}\s*{re.escape(right)}',
-                ' ', text, flags=re.IGNORECASE)
-        text = re.sub(re.escape(term), ' ', text, flags=re.IGNORECASE)
-        text = re.sub(r'\[\s*\]|【\s*】|\(\s*\)|（\s*）|\{\s*\}', ' ', text)
-    for marker, term in protected.items():
-        text = text.replace(marker, term)
+    terms = set()
+    for key in ('metadata_search_remove_keywords', 'metadata_search_keep_keywords'):
+        terms.update(_metadata_keyword_list(config.get(key)))
+    if terms:
+        # A single substitution avoids removing newly formed matches on this pass.
+        pattern = '|'.join(re.escape(term) for term in sorted(terms, key=len, reverse=True))
+        text = re.sub(pattern, ' ', text, flags=re.IGNORECASE)
     return re.sub(r'\s+', ' ', text).strip()
 
 
@@ -3206,7 +3160,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         {'key': 'metadata_genre_map', 'label': '장르 변환', 'type': 'text', 'default': ''},
         {'key': 'metadata_publisher_map', 'label': '출판사 변환', 'type': 'text', 'default': ''},
         {'key': 'metadata_search_remove_keywords', 'label': '검색에서 제거할 키워드', 'type': 'text', 'default': ''},
-        {'key': 'metadata_search_keep_keywords', 'label': '검색에서 유지할 키워드', 'type': 'text', 'default': ''},
+        {'key': 'metadata_search_keep_keywords', 'label': '검색에서 특별제외할 키워드', 'type': 'text', 'default': ''},
         {'key': 'metadata_collect_cover', 'label': '웹툰 표지 가져오기', 'type': 'checkbox', 'default': True},
         {'key': 'metadata_cover_kinds', 'label': '표지를 가져올 자료 유형', 'type': 'text', 'default': 'manga,novel,manhwa,unspecified'},
         {'key': 'metadata_manual_overwrite', 'label': '수동 메타데이터 적용 시 기존 값 덮어쓰기', 'type': 'checkbox', 'default': False},
