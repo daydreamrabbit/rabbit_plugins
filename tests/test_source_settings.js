@@ -55,9 +55,9 @@ const code = fs.readFileSync(require('path').join(__dirname, '../settings.js'), 
 const block = code.slice(code.indexOf('  if (sourceList && sourceInput && fieldInput)'), code.indexOf('\n})();'));
 
 for (const initial of ['ridi', '']) {
-  const sourceList = new Element(), sourceInput = {}, fieldInput = {};
+  const sourceList = new Element(), sourceInput = {}, fieldInput = {}, fieldVersionInput = {};
   vm.runInNewContext(block, {
-    sourceList, sourceInput, fieldInput, savedConfig: { metadata_sources: initial },
+    sourceList, sourceInput, fieldInput, fieldVersionInput, savedConfig: { metadata_sources: initial },
     root: { querySelectorAll: () => [] }, syncChoiceState() {},
     document: { createElement: () => new Element() },
   });
@@ -111,7 +111,7 @@ for (const initial of ['ridi', '']) {
 
   const reopenedList = new Element(), reopenedValue = {};
   vm.runInNewContext(block, {
-    sourceList: reopenedList, sourceInput: reopenedValue, fieldInput: {},
+    sourceList: reopenedList, sourceInput: reopenedValue, fieldInput: {}, fieldVersionInput: {},
     savedConfig: { metadata_sources: sourceInput.value },
     root: { querySelectorAll: () => [] }, syncChoiceState() {},
     document: { createElement: () => new Element() },

@@ -21,6 +21,7 @@ class DetailArchiveIoTests(unittest.TestCase):
                 'localized_series': '원제',
                 'release_date': '2024-01-02',
                 'publication_status': '2',
+                'translator': 'ComicInfo 번역가',
                 'document_volume_index': 1,
                 'document_volume_count': 3,
             }
@@ -29,6 +30,7 @@ class DetailArchiveIoTests(unittest.TestCase):
                 result = m._detail_file_metadata(row)
 
             self.assertEqual(result['writer'], 'DB 작가')
+            self.assertEqual(result['translator'], 'ComicInfo 번역가')
             self.assertEqual(result['summary'], 'YAML에서 스캔한 소개')
             self.assertEqual(result['localized_series'], '원제')
             self.assertEqual((result['volume'], result['count']), (1, 3))
@@ -51,7 +53,8 @@ class DetailArchiveIoTests(unittest.TestCase):
                 'genre': '판타지', 'tags': '웹소설', 'books_lv': 'Everyone', 'file_path': media_path,
                 'file_format': 'cbz', 'file_mtime': 1, 'file_size': 10, 'cover_artist': '',
                 'release_date': '2024-01-02', 'publication_status': '2',
-                'document_volume_index': 1, 'document_volume_count': 1,
+                'document_volume_index': 1, 'document_volume_count': 3,
+                'translator': '박경용',
             }
             file_row = {
                 **book, 'created_at': '2024-01-02', 'total_pages': 0, 'pages_read': 0,
@@ -95,7 +98,11 @@ class DetailArchiveIoTests(unittest.TestCase):
 
             self.assertTrue(result['success'])
             self.assertEqual(result['comicinfo']['summary'], 'YAML 소개')
+            self.assertEqual(result['comicinfo']['translator'], '박경용')
             self.assertEqual(result['files'][0]['file_path'], media_path)
+            self.assertEqual(result['publication_volume_coverage'], {
+                'known': True, 'present': 1, 'total': 3, 'missing': 2,
+            })
 
 
 if __name__ == '__main__':

@@ -18,6 +18,26 @@ class ProviderTests(unittest.TestCase):
         return dict(id=source, title='작품', source=source, author=author,
                     url='https://example.com/' + source, summary='소개', publisher=source)
 
+    def test_legacy_automatic_field_settings_collect_translator(self):
+        legacy = {'metadata_fields': 'author,summary', 'metadata_fields_version': '0'}
+        self.assertIn('translator', m._metadata_field_selection(legacy, automatic=True))
+        opted_out = {'metadata_fields': 'author,summary', 'metadata_fields_version': '1'}
+        self.assertNotIn('translator', m._metadata_field_selection(opted_out, automatic=True))
+
+    def test_translator_empty_value_triggers_metadata_retry(self):
+        fields = m._metadata_field_selection(
+            {'metadata_fields': 'author,summary', 'metadata_fields_version': '0'},
+            automatic=True)
+        condition = m._metadata_missing_condition(
+            fields, 'b.cover_artist', 'b.localized_series', 'b.translator')
+        self.assertIn('COALESCE(b.translator, "") = ""', condition)
+        opted_out_fields = m._metadata_field_selection(
+            {'metadata_fields': 'author,summary', 'metadata_fields_version': '1'},
+            automatic=True)
+        opted_out_condition = m._metadata_missing_condition(
+            opted_out_fields, 'b.cover_artist', 'b.localized_series', 'b.translator')
+        self.assertNotIn('COALESCE(b.translator, "") = ""', opted_out_condition)
+
     def test_search_candidates_keep_their_own_covers(self):
         ridi_payload = {'props': {'books': [
             {'id': '896000382', 'book': {'title': {'main': '전설의 기사'},
@@ -218,6 +238,21 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual([row['id'] for row in auto_serial], ['yes24:35838841'])
         self.assertEqual([row['id'] for row in auto_volume], ['yes24:107847473'])
 
+    def test_yes24_adult_flag_does_not_claim_pornography(self):
+        items = [
+            {'itemId': 31, 'title': '성인 만화', 'author': '만화작가',
+             'goodsType': 'eBook', 'goodsSortNm': 'eBook-만화-성인', 'adultYn': 'Y'},
+            {'itemId': 32, 'title': '성인 소설', 'author': '소설작가',
+             'goodsType': 'eBook', 'goodsSortNm': 'eBook-소설-판타지', 'adultYn': 'Y'},
+        ]
+        response = SimpleNamespace(status_code=200, raise_for_status=lambda: None,
+                                   json=lambda: {'success': True, 'data': {'items': items}})
+        with patch('requests.get', return_value=response):
+            manga = m._yes24_search('성인 만화', 'manga', 'key')
+            novel = m._yes24_search('성인 소설', 'novel', 'key')
+        self.assertEqual(manga[0]['metadata']['books_lv'], 'r18')
+        self.assertEqual(novel[0]['metadata']['books_lv'], 'm')
+
     def test_yes24_errors_do_not_expose_api_key(self):
         response = SimpleNamespace(status_code=401, raise_for_status=lambda: (_ for _ in ()).throw(
             RuntimeError('authorization failed')))
@@ -285,6 +320,136 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(dates['publication_end_date'], '2026-08-26')
         self.assertEqual(dates['release_dates_by_volume'],
                          {'1': '2024-08-07', '8': '2026-08-26'})
+
+    def test_ridi_role_metadata_reads_translator_from_book_detail(self):
+        page = ('<script>var bookDetail = {"authors":'
+                '{"story_writer":["원작자"],"illustrator":["작화가"],'
+                '"translator":["박경용"]}};</script>')
+        roles = m._ridi_role_metadata(page)
+        cleaned = m._metadata_clean(roles)
+        self.assertEqual(cleaned['author'], '원작자')
+        self.assertEqual(cleaned['cover_artist'], '작화가')
+        self.assertEqual(cleaned['translator'], '박경용')
+
+    def test_ridi_role_metadata_reads_translator_label_fallback(self):
+        page = '<li><span>번역</span><a>박경용</a></li>'
+        self.assertEqual(m._ridi_role_metadata(page)['translator'], '박경용')
+
+    def test_ridi_original_author_is_not_merged_with_illustrator(self):
+        page = ('<script>var bookDetail = {"author":"쿠로세 코우스케, 카규 쿠모",'
+                '"authors":{"illustrator":{"95137":"쿠로세 코우스케"},'
+                '"original_author":{"95138":"카규 쿠모"},'
+                '"translator":{"71088":"박경용"}}};</script>')
+        roles = m._ridi_role_metadata(page)
+        self.assertEqual(roles['author'], '카규 쿠모')
+        self.assertEqual(roles['cover_artist'], '쿠로세 코우스케')
+        self.assertEqual(roles['translator'], '박경용')
+
+    def test_ridi_detail_roles_override_flattened_search_author(self):
+        fetched = {
+            'author': '카규 쿠모',
+            'cover_artist': '쿠로세 코우스케',
+            'translator': '박경용',
+            'summary': '리디 상세 소개',
+        }
+        candidate = {
+            'author': '쿠로세 코우스케, 카규 쿠모',
+            'summary': '검색 후보 소개',
+        }
+        merged = m._merge_ridi_role_metadata(fetched, candidate)
+        self.assertEqual(merged['author'], '카규 쿠모')
+        self.assertEqual(merged['cover_artist'], '쿠로세 코우스케')
+        self.assertEqual(merged['translator'], '박경용')
+        self.assertEqual(merged['summary'], '검색 후보 소개')
+
+    def test_auto_merge_obeys_source_priority_and_aggregates_tags_links(self):
+        provider = self.provider()
+        # Input order differs from the configured priority. The configured
+        # order must win for scalar fields, while tags and links are additive.
+        ridi = {
+            'id': 'ridi:1', 'title': '작품', 'source': 'ridi',
+            'url': 'https://ridibooks.com/books/1', 'author': '작가',
+            '_metadata_fetched': True,
+            'metadata': {
+                'title': '작품', 'author': '작가', 'publisher': '리디 출판사',
+                'summary': '리디 소개', 'genre': '판타지',
+                'release_date': '2024-01-01', 'tags': '공통, 회귀, 로맨스',
+                'link': 'https://ridibooks.com/books/1', 'cover': 'ridi-cover',
+                'cover_by_volume': {'1': 'ridi-volume-1', '2': 'ridi-volume-2'},
+            },
+        }
+        yes24 = {
+            'id': 'yes24:1', 'title': '작품', 'source': 'yes24',
+            'url': 'https://www.yes24.com/product/goods/1', 'author': '작가',
+            'metadata': {
+                'title': '작품', 'author': '작가', 'publisher': '예스24 출판사',
+                'summary': '예스24 소개', 'genre': '로맨스',
+                'tags': '공통, 성장물',
+                'link': 'https://www.yes24.com/product/goods/1',
+                'cover': 'yes24-cover',
+                'cover_by_volume': {'1': 'yes24-volume-1'},
+            },
+        }
+        with patch.object(provider, '_series_db_remote_identity', return_value={}):
+            selected = provider._select_auto_candidates(
+                [ridi, yes24], '작품', 'novel', '', ['yes24', 'ridi'])
+            merged = provider._merge_metadata_candidates(selected, 'novel')
+
+        self.assertEqual([item['source'] for item in selected], ['yes24', 'ridi'])
+        metadata = merged['metadata']
+        self.assertEqual(metadata['author'], '작가')
+        self.assertEqual(metadata['publisher'], '예스24 출판사')
+        self.assertEqual(metadata['summary'], '예스24 소개')
+        self.assertEqual(metadata['genre'], '로맨스')
+        self.assertEqual(metadata['release_date'], '2024-01-01')
+        self.assertEqual(metadata['cover'], 'yes24-cover')
+        self.assertEqual(metadata['tags'], '공통, 성장물, 회귀')
+        self.assertEqual(set(metadata['link'].split(', ')), {
+            'https://www.yes24.com/product/goods/1',
+            'https://ridibooks.com/books/1',
+        })
+        self.assertEqual(merged['cover_source'], 'yes24')
+        self.assertEqual(merged['cover_by_volume'], {
+            '1': 'yes24-volume-1', '2': 'ridi-volume-2',
+        })
+
+    def test_grouped_naver_and_kakao_catalogs_union_tags_and_links(self):
+        provider = self.provider()
+        naver_series = {
+            'source': 'naver', 'title': '작품', 'author': '작가',
+            'metadata': {'title': '작품', 'author': '작가', 'genre': '판타지',
+                         'tags': '공통, 판타지',
+                         'link': 'https://series.naver.com/novel/detail?productNo=1'},
+        }
+        naver_webtoon = {
+            'source': 'naver_webtoon', 'title': '작품', 'author': '작가',
+            'metadata': {'title': '작품', 'author': '작가', 'tags': '공통, 액션, 판타지',
+                         'link': 'https://comic.naver.com/webtoon/list?titleId=1'},
+        }
+        kakao_page = {
+            'source': 'kakaopage', 'title': '작품', 'author': '작가',
+            'metadata': {'title': '작품', 'author': '작가', 'genre': '판타지',
+                         'tags': '공통, 판타지',
+                         'link': 'https://page.kakao.com/content/1'},
+        }
+        kakao_webtoon = {
+            'source': 'kakao_webtoon', 'title': '작품', 'author': '작가',
+            'metadata': {'title': '작품', 'author': '작가', 'tags': '공통, 액션, 판타지',
+                         'link': 'https://webtoon.kakao.com/content/1'},
+        }
+        with patch.object(m, '_naver_catalogue_metadata', return_value={}):
+            naver = provider._combine_naver_candidates(
+                [naver_series, naver_webtoon], book_type='volume')[0]
+        kakao = provider._combine_kakao_candidates([kakao_page, kakao_webtoon])[0]
+
+        self.assertEqual(naver['metadata']['tags'], '공통, 액션')
+        self.assertIn('https://series.naver.com/novel/detail?productNo=1',
+                      naver['metadata']['link'])
+        self.assertIn('https://comic.naver.com/webtoon/list?titleId=1',
+                      naver['metadata']['link'])
+        self.assertEqual(kakao['metadata']['tags'], '공통, 액션')
+        self.assertIn('https://page.kakao.com/content/1', kakao['metadata']['link'])
+        self.assertIn('https://webtoon.kakao.com/content/1', kakao['metadata']['link'])
 
     def test_type_gates_and_priority(self):
         calls = []

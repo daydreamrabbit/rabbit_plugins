@@ -20,4 +20,16 @@ assert.ok(code.includes("if (contentKind === 'book' || standalone)"));
 assert.ok(code.includes("const listenButtonElement = $('[data-action=listen]')"));
 assert.ok(code.includes("listenButton(book, 'ds-book-listen'"));
 assert.ok(code.includes("listenButton(listenTarget, 'ds-volume-listen'"));
+const coverageStart = code.indexOf('  function completedVolumeCoverageStatus(');
+const coverageEnd = code.indexOf('\n  function renderInfo()', coverageStart);
+assert(coverageStart >= 0 && coverageEnd > coverageStart, 'completed volume status helper must exist');
+const coverageContext = {};
+vm.createContext(coverageContext);
+vm.runInContext(code.slice(coverageStart, coverageEnd), coverageContext);
+assert.equal(coverageContext.completedVolumeCoverageStatus('완결',
+  {known: true, present: 1, total: 3, missing: 2}), '누락 (1/3권)');
+assert.equal(coverageContext.completedVolumeCoverageStatus('완결',
+  {known: true, present: 3, total: 3, missing: 0}), '');
+assert.equal(coverageContext.completedVolumeCoverageStatus('연재',
+  {known: true, present: 1, total: 3, missing: 2}), '');
 console.log('PASS standalone detection and TTS entry points: action row, series covers, and volume covers');

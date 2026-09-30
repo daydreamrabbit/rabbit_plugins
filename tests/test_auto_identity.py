@@ -79,7 +79,7 @@ class AutoIdentityTests(unittest.TestCase):
   provider.get_plugin_config=lambda *_:{'metadata_sources':'ridi,naver,yes24'}
   provider._search_metadata=lambda *_args,**_kwargs:fresh
   selected=[]
-  provider._merge_metadata_candidates=lambda rows,_kind:(selected.extend(rows) or
+  provider._merge_metadata_candidates=lambda rows,_kind,**_kwargs:(selected.extend(rows) or
        {'source':'merged','metadata':{'author':'이누요시 아키라'}})
   provider._apply_metadata=lambda *_args,**_kwargs:(True,'적용 완료')
   app=Flask(__name__);app.secret_key='test'
@@ -90,6 +90,45 @@ class AutoIdentityTests(unittest.TestCase):
     result=provider.run_context_menu_action('general','metadata_confirm_same_work',{'book_id':1})
   self.assertTrue(result['success'])
   self.assertEqual([item['source'] for item in selected],['ridi','naver','yes24'])
+
+ def test_settings_can_list_legacy_and_current_author_conflict_holds(self):
+  candidates=[{'source':'ridi','title':'작품','author':'작가 A','url':'https://ridibooks.com/books/1'},
+              {'source':'yes24','title':'작품','author':'작가 B','url':'https://yes24.com/1'}]
+  legacy_series='기존 보류 작품'
+  current_series='새 보류 작품'
+  setting_patterns=[]
+  class Gateway:
+   def __init__(self, db_type): self.db_type=db_type
+   def fetch_all(self, sql, _params=()):
+    if 'FROM settings' in sql:
+     setting_patterns.append(_params[0])
+     if self.db_type=='general':
+      return [{'key':m._metadata_hold_key(2,legacy_series), 'value':json.dumps({
+       'reason':'author_conflict','query':legacy_series,'checked_at':'2026-09-30T10:00:00',
+       'candidates':candidates})}]
+     return [{'key':m._metadata_hold_key(5,current_series), 'value':json.dumps({
+      'reason':'author_conflict','query':current_series,'checked_at':'2026-09-30T11:00:00',
+      'book_id':51,'library_id':5,'series_name':current_series,'book_count':3,
+      'candidates':candidates})}]
+    if 'SELECT id, name FROM libraries' in sql:
+     return [{'id':2,'name':'일반 테스트'},{'id':5,'name':'성인 테스트'}]
+    if 'GROUP BY b.library_id, b.series_name' in sql:
+     return [{'book_id':20,'library_id':2,'series_name':legacy_series,
+              'book_count':2,'library_name':'일반 테스트'}]
+    return []
+  provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  provider.get_db_gateway=lambda db_type:Gateway(db_type)
+  app=Flask(__name__);app.secret_key='test'
+  with app.test_request_context('/'):
+   session['role']='admin'
+   result=provider.run_context_menu_action('general','metadata_list_holds',{})
+  self.assertTrue(result['success'])
+  self.assertEqual({(item['db_type'],item['series_name'],item['book_id']) for item in result['holds']},
+                   {('general',legacy_series,20),('adult',current_series,51)})
+  direct=next(item for item in result['holds'] if item['series_name']==current_series)
+  self.assertEqual(direct['book_count'],3)
+  self.assertEqual(direct['library_name'],'성인 테스트')
+  self.assertEqual(setting_patterns,['rabbit_plugins:metadata!_hold:%']*2)
 
  def test_adult_uses_shared_conversion_settings(self):
   provider=object.__new__(m.RabbitPluginsMetadataProvider)
@@ -110,6 +149,49 @@ class AutoIdentityTests(unittest.TestCase):
   self.assertTrue(ok)
   updates=[params for query,params in gateway.updates if query.startswith('UPDATE books SET')]
   self.assertTrue(any('변경 출판사' in params for params in updates))
+
+ def test_automatic_apply_preserves_existing_scalars_and_unions_tags_links(self):
+  gateway=ApplyGateway();provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  config={'metadata_overwrite':False,'metadata_collect_cover':False}
+  item={'source':'merged','metadata':{
+   'author':'외부 작가','isbn':'외부 ISBN','publisher':'외부 출판사',
+   'summary':'외부 소개','genre':'외부 장르','tags':'신규 태그, 공통 태그',
+   'link':'https://ridibooks.com/books/1, https://www.yes24.com/product/goods/1',
+  }}
+  with patch.object(m,'_optional_column_sql',return_value='NULL'):
+   ok,_=provider._apply_metadata(
+    gateway,1,item,config,
+    fields=['author','isbn','publisher','summary','genre','tags','link'])
+  self.assertTrue(ok)
+  updates=[(sql,params) for sql,params in gateway.updates
+           if sql.startswith('UPDATE books SET')]
+  self.assertEqual(len(updates),1)
+  sql,params=updates[0]
+  self.assertIn('tags = ?',sql)
+  self.assertIn('link = ?',sql)
+  self.assertEqual(params[0],'내부 태그, 신규 태그, 공통 태그')
+  self.assertEqual(set(params[1].split(', ')),{
+   'https://ridibooks.com/books/1',
+   'https://www.yes24.com/product/goods/1',
+  })
+  self.assertEqual(params[-1],1)
+  for existing in ('내부 작가','내부 ISBN','내부 출판사','내부 소개','내부 장르'):
+   self.assertNotIn(existing,params)
+
+ def test_saved_comicinfo_age_rating_survives_provider_overwrite(self):
+  class Gateway(ApplyGateway):
+   def fetch_one(self,query,params=()):
+    if 'SELECT books_lv FROM books' in query:return {'books_lv':'R18+'}
+    return super().fetch_one(query,params)
+  gateway=Gateway();provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  config={'metadata_overwrite':True,'metadata_collect_cover':False}
+  item={'source':'ridi','metadata':{'books_lv':'adult only'}}
+  def optional_column(_gateway,table,alias,column):
+   return f'{alias}.{column}' if table=='books' and column=='books_lv' else 'NULL'
+  with patch.object(m,'_optional_column_sql',side_effect=optional_column):
+   ok,_=provider._apply_metadata(gateway,1,item,config,fields=['books_lv'])
+  self.assertTrue(ok)
+  self.assertFalse(any('adult only' in params for query,params in gateway.updates))
 
  def test_quoted_retailer_titles_retry_and_verify_full_work(self):
   query='“너 따위가 마왕을 이길 수 있다고 생각하지 마”라며 용사 파티에서 추방되었으니 왕도에서 멋대로 살고 싶다'
@@ -302,7 +384,7 @@ class AutoIdentityTests(unittest.TestCase):
    result=provider._auto_collect('general',{'library_id':7,
     '_rabbit_progress_callback':lambda event,**details:progress.append((event,details))})
   self.assertEqual(result['rows'],1)
-  self.assertIn('b.author, CASE WHEN',gateway.query)
+  self.assertIn('b.author, NULL AS localized_series, CASE WHEN',gateway.query)
   self.assertEqual(progress[0][0],'started')
   self.assertTrue(any(event=='progress' and details.get('completed')==1
                       for event,details in progress))
@@ -408,7 +490,40 @@ class AutoIdentityTests(unittest.TestCase):
   update=next((params for query,params in gateway.updates if query.startswith('UPDATE books SET')),())
   self.assertIn('외부 작가',update);self.assertIn('외부 출판사',update)
   self.assertIn('외부 소개',update);self.assertIn('외부 장르',update)
+  self.assertIn('내부 태그, 외부 태그',update)
   self.assertNotIn('내부 장르',update)
+
+ def test_automatic_overwrite_merges_provider_tags_into_each_volume(self):
+  class Gateway(ApplyGateway):
+   def fetch_one(self,query,params=()):
+    if 'FROM libraries' in query:return {'content_kind':'manga'}
+    if 'FROM books b WHERE b.id' in query:
+     book_id=params[0]
+     tags='내부 태그' if book_id==1 else '다른 권 로컬 태그'
+     return {'id':book_id,'series_name':'작품','library_id':4,
+      'file_path':f'/books/작품 {book_id}권.cbz','cover_image':'',
+      'metadata_locked':0,'author':'','isbn':'','publisher':'','summary':'',
+      'link':'','genre':'','tags':tags,'release_date':'','title_alias':'',
+      'localized_series':'','cover_artist':''}
+    return {}
+   def fetch_all(self,query,params=()):
+    if query.startswith('SELECT id, title, title_alias'):
+     return [{'id':1,'title':'작품 1권','title_alias':'','file_path':'/books/작품 1권.cbz',
+      'cover_image':'','metadata_locked':0,'link':'','volume_index':1},
+      {'id':2,'title':'작품 2권','title_alias':'','file_path':'/books/작품 2권.cbz',
+      'cover_image':'','metadata_locked':0,'link':'','volume_index':2}]
+    return []
+  gateway=Gateway();provider=object.__new__(m.RabbitPluginsMetadataProvider)
+  item={'source':'ridi','metadata':{'tags':'공급처 태그'}}
+  with patch.object(m,'_optional_column_sql',return_value='NULL'):
+   ok,_=provider._apply_metadata(gateway,1,item,
+    {'metadata_overwrite':True,'metadata_collect_cover':False},fields=['tags'])
+  self.assertTrue(ok)
+  tag_updates=[params for query,params in gateway.updates
+   if query.startswith('UPDATE books SET') and 'tags' in query]
+  self.assertEqual(len(tag_updates),2)
+  self.assertIn('내부 태그, 공급처 태그',tag_updates[0])
+  self.assertIn('다른 권 로컬 태그, 공급처 태그',tag_updates[1])
  def test_selected_provider_link_replaces_stale_edition(self):
   existing='https://ridibooks.com/books/old, https://series.naver.com/comic/detail.series?productNo=7'
   incoming='https://ridibooks.com/books/new'
@@ -452,6 +567,47 @@ class AutoIdentityTests(unittest.TestCase):
    self.assertEqual([item['id'] for item in result],['series_db:82700'])
    self.assertTrue(any(m._metadata_title_matches(title,match)
                        for match in result[0]['_match_titles']))
+
+ def test_series_db_search_falls_back_to_original_title_without_korean_alias(self):
+  korean='한글 대체 제목이 없는 작품'
+  original='死刑宣告された賢女が嫌われ王子に溺愛されて、幸せになるまでの物語'
+  with tempfile.TemporaryDirectory() as directory:
+   path=Path(directory)/'series.sqlite'
+   with sqlite3.connect(path) as db:
+    db.execute('CREATE TABLE series (id INTEGER, title TEXT, native_title TEXT, '
+     'secondary_titles_ko TEXT, titles TEXT, type TEXT, links TEXT, authors TEXT, '
+     'artists TEXT, cover_raw_url TEXT, status TEXT, final_volume INTEGER, content_rating TEXT)')
+    db.execute('INSERT INTO series VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',(
+     132249,'English catalogue title',original,'[]','[]','novel',
+     json.dumps(['https://mangabaka.org/132249']),json.dumps(['En Kito']),
+     '[]','',None,None,None))
+   provider=object.__new__(m.RabbitPluginsMetadataProvider)
+   provider._series_db_path=lambda:path
+   with patch.object(m,'_metadata_source_order',return_value=['series_db']):
+    results=provider._search_metadata(korean,{'metadata_sources':'series_db'},
+     'general','novel',manual=True,original_title=original)
+   self.assertEqual([item['id'] for item in results],['series_db:132249'])
+   selected=provider._select_auto_candidates(results,korean,'novel','',
+     ['series_db'],original_title=original)
+   self.assertEqual([item['id'] for item in selected],['series_db:132249'])
+   self.assertEqual(results[0]['metadata']['localized_series'],original)
+
+ def test_series_db_title_lookup_ignores_korean_alias_spacing(self):
+  with tempfile.TemporaryDirectory() as directory:
+   path=Path(directory)/'series.sqlite'
+   with sqlite3.connect(path) as db:
+    db.execute('CREATE TABLE series (id INTEGER, title TEXT, native_title TEXT, '
+     'secondary_titles_ko TEXT, titles TEXT, type TEXT, links TEXT, authors TEXT, '
+     'artists TEXT, cover_raw_url TEXT, status TEXT, final_volume INTEGER, content_rating TEXT)')
+    db.execute('INSERT INTO series VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',(
+     132250,'아이를 가질 때 까지 내게 안겨라',
+     '死刑宣告された賢女が嫌われ王子に溺愛されて、幸せになるまでの物語',
+     '[]','[]','novel','[]','[]','[]','',None,None,None))
+   provider=object.__new__(m.RabbitPluginsMetadataProvider)
+   provider._series_db_path=lambda:path
+   result=provider._series_db_search('아이를 가질 때까지 내게 안겨라','novel')
+   self.assertEqual([item['id'] for item in result],['series_db:132250'])
+
  def test_scan_restore_keeps_volume_ridi_and_recovers_other_sources(self):
   class LinkGateway:
    def __init__(self):
@@ -489,7 +645,7 @@ class AutoIdentityTests(unittest.TestCase):
     if 'ORDER BY id DESC LIMIT ?' in query:
      return [{'id':12,'series_name':'작품','title':'작품 02권 (완결)',
               'file_path':'/books/작품 02권 (완결).epub'}]
-    if 'publication_status, tags, metadata_locked' in query:
+    if 'b.publication_status, b.tags, b.metadata_locked' in query:
      return [
       {'id':11,'title':'작품 01권','file_path':'/books/작품 01권.epub',
        'publication_status':'0','tags':'기존','metadata_locked':0},

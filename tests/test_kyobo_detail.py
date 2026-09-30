@@ -67,3 +67,34 @@ class KyoboTests(unittest.TestCase):
     'manual_fields':{'cover_artist':'새 그림작가','release_date':'2024-01-02','genre':'판타지','summary':'소개'}})
    self.assertTrue(result['success'])
    self.assertEqual(result['manual_empty_fields'],[])
+
+ def test_detail_metadata_editor_saves_and_clears_translator_for_series(self):
+  from flask import Flask,session
+  from unittest.mock import patch
+  import json
+  class Gateway:
+   def __init__(self):self.settings={};self.writes=[]
+   def fetch_all(self,*a):return [{'id':1,'library_id':17,'file_path':'book.cbz'}]
+   def execute(self,sql,args):self.writes.append((sql,args))
+   def get_setting(self,key,default=None):return {'value':self.settings.get(key,'{}')}
+   def set_setting(self,key,value):self.settings[key]=value
+  p=object.__new__(m.RabbitPluginsMetadataProvider);g=Gateway();p.get_db_gateway=lambda *a:g
+  app=Flask('translator-edit-test');app.secret_key='fixture'
+  def column_sql(_gateway,_table,alias,column):
+   return f'{alias}.{column}' if column in {'cover_artist','translator'} else 'NULL'
+  with app.test_request_context('/'),patch.object(m,'_optional_column_sql',side_effect=column_sql),patch.object(m,'_comicinfo_metadata',return_value={'artist':'그림작가','count':0,'volume':0}):
+   session['role']='admin'
+   for value in ('박경용',''):
+    result=p.run_context_menu_action('general','save_detail_metadata',{
+     'series_name':'작품','cover_artist':'그림작가',
+     'manual_fields':{'cover_artist':'그림작가','translator':value}})
+    self.assertTrue(result['success'])
+    self.assertTrue(result['translator_saved'])
+    self.assertIn(('UPDATE books SET translator = ? WHERE series_name = ? AND COALESCE(is_deleted, 0) = 0',
+                   (value,'작품')),g.writes)
+   self.assertIn('translator',json.loads(g.settings[m._series_dates_key(17,'작품')])['manual_empty_fields'])
+   writes_before=len(g.writes)
+   result=p.run_context_menu_action('general','save_detail_metadata',{
+    'series_name':'작품','manual_fields':{'translator':'x'*501}})
+   self.assertFalse(result['success'])
+   self.assertEqual(len(g.writes),writes_before)

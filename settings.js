@@ -12,6 +12,7 @@
   const sourceList = root.querySelector('#rabbit-metadata-sources');
   const sourceInput = root.querySelector('[name="metadata_sources"]');
   const fieldInput = root.querySelector('[name="metadata_fields"]');
+  const fieldVersionInput = root.querySelector('[name="metadata_fields_version"]');
   const conversionGroups = [
     { key: 'metadata_genre_map', list: '#rabbit-metadata-genre-rules', add: '[data-add-conversion="genre"]', from: '들어오는 장르값', to: '저장할 장르값' },
     { key: 'metadata_publisher_map', list: '#rabbit-metadata-publisher-rules', add: '[data-add-conversion="publisher"]', from: '들어오는 출판사값', to: '저장할 출판사값' },
@@ -250,11 +251,13 @@
     if (!sources.length) sources = sourceKeys.slice();
     const configuredFields = String(savedConfig.metadata_fields || '').split(/[,;|]/)
       .map(item => item.trim()).filter(Boolean);
+    const savedFieldVersion = Number(savedConfig.metadata_fields_version) || 0;
     const sync = () => {
       sourceInput.value = sources.filter(key => sourceList.querySelector(`input[data-source="${key}"]`)?.checked)
         .join(',');
       fieldInput.value = [...root.querySelectorAll('[data-metadata-field]:checked')]
         .map(input => input.dataset.metadataField).join(',');
+      if (fieldVersionInput) fieldVersionInput.value = '1';
       sourceList.querySelectorAll('.rabbit-metadata-source-row').forEach(row => {
         const input = row.querySelector('[data-source]');
         row.classList.toggle('is-selected', !!input?.checked);
@@ -320,7 +323,8 @@
     sourceInput.value = sources.join(',');
     render();
     root.querySelectorAll('[data-metadata-field]').forEach(input => {
-      input.checked = !configuredFields.length || configuredFields.includes(input.dataset.metadataField);
+      input.checked = !configuredFields.length || configuredFields.includes(input.dataset.metadataField)
+        || (input.dataset.metadataField === 'translator' && savedFieldVersion < 1);
       input.addEventListener('change', sync);
       syncChoiceState(input);
     });
@@ -493,6 +497,226 @@
       addButton.disabled = true;
     });
 });
+
+(function () {
+  const list = root.querySelector('[data-hold-list]');
+  if (!list) return;
+
+  const refreshButton = root.querySelector('[data-hold-refresh]');
+  const selectAll = root.querySelector('[data-hold-select-all]');
+  const applySelectedButton = root.querySelector('[data-hold-apply-selected]');
+  const countNode = root.querySelector('[data-hold-count]');
+  const statusNode = root.querySelector('[data-hold-status]');
+  const providerLabels = {
+    series_db: 'Series.db', ridi: '리디', naver: '네이버시리즈',
+    naver_webtoon: '네이버웹툰', kyobo: '교보문고', yes24: '예스24',
+    kakaopage: '카카오페이지', kakao_webtoon: '카카오웹툰',
+    munpia: '문피아', novelpia: '노벨피아',
+  };
+  let holds = [];
+  let busy = false;
+  let loadError = '';
+
+  const setStatus = (message, kind = '') => {
+    if (!statusNode) return;
+    statusNode.textContent = message;
+    statusNode.className = `rabbit-metadata-hold-status${kind ? ` is-${kind}` : ''}`;
+  };
+  const notify = (message, kind = 'success') => {
+    if (typeof window.showToast === 'function') window.showToast(message, kind);
+  };
+  const postAction = async (actionId, type = 'general', context = {}) => {
+    const response = await fetch('/api/media/context-menu/book/plugins/action', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type, plugin_id: pluginId, action_id: actionId, context }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) throw new Error(data.error || `요청에 실패했습니다. (HTTP ${response.status})`);
+    return data;
+  };
+  const makeText = (tag, className, text) => {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    element.textContent = String(text || '');
+    return element;
+  };
+  const selectedHolds = () => {
+    const selected = new Set([...list.querySelectorAll('[data-hold-select]:checked')]
+      .map(input => input.dataset.holdSelect));
+    return holds.filter(hold => selected.has(`${hold.db_type}:${hold.book_id}`));
+  };
+  const syncSelection = () => {
+    const selected = selectedHolds().length;
+    if (countNode) countNode.textContent = `보류 ${holds.length}건 · 선택 ${selected}건`;
+    if (applySelectedButton) applySelectedButton.disabled = busy || selected === 0;
+    if (selectAll) {
+      selectAll.disabled = busy || holds.length === 0;
+      selectAll.checked = holds.length > 0 && selected === holds.length;
+      selectAll.indeterminate = selected > 0 && selected < holds.length;
+    }
+    if (refreshButton) refreshButton.disabled = busy;
+  };
+  const safeExternalUrl = value => {
+    try {
+      const url = new URL(String(value || ''), window.location.href);
+      return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+    } catch (_) {
+      return '';
+    }
+  };
+  const renderHolds = () => {
+    list.replaceChildren();
+    if (!holds.length) {
+      list.append(makeText('p', 'rabbit-metadata-hold-empty', loadError
+        ? '보류 목록을 불러오지 못했습니다. 새로고침을 눌러 다시 시도해 주세요.'
+        : '현재 자동 적용이 보류된 작품이 없습니다.'));
+      syncSelection();
+      return;
+    }
+    holds.forEach((hold, index) => {
+      const identity = `${hold.db_type}:${hold.book_id}`;
+      const card = document.createElement('article');
+      card.className = 'rabbit-metadata-hold-card';
+      card.dataset.holdIdentity = identity;
+
+      const head = document.createElement('div');
+      head.className = 'rabbit-metadata-hold-card-head';
+      const selectLabel = document.createElement('label');
+      selectLabel.className = 'rabbit-choice-label';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.dataset.holdSelect = identity;
+      checkbox.setAttribute('aria-label', `${hold.series_name} 선택`);
+      selectLabel.append(checkbox);
+      const titleWrap = document.createElement('div');
+      titleWrap.className = 'rabbit-metadata-hold-title-wrap';
+      titleWrap.append(makeText('strong', 'rabbit-metadata-hold-title', hold.series_name));
+      const dbLabel = hold.db_type === 'adult' ? '성인 서재' : '일반 서재';
+      const libraryLabel = hold.library_name || `라이브러리 ${hold.library_id}`;
+      const checkedAt = hold.checked_at ? new Date(hold.checked_at).toLocaleString('ko-KR') : '';
+      titleWrap.append(makeText('span', 'rabbit-metadata-hold-subtitle',
+        `${dbLabel} · ${libraryLabel}${hold.book_count ? ` · 파일 ${hold.book_count}개` : ''}${checkedAt ? ` · 보류 ${checkedAt}` : ''}`));
+      head.append(selectLabel, titleWrap);
+      card.append(head);
+
+      const candidates = Array.isArray(hold.candidates) ? hold.candidates : [];
+      const details = document.createElement('details');
+      details.className = 'rabbit-metadata-hold-candidates';
+      const summary = makeText('summary', '', `후보 확인 (${candidates.length}개 제공처)`);
+      details.append(summary);
+      const candidateList = document.createElement('div');
+      candidateList.className = 'rabbit-metadata-hold-candidate-list';
+      candidates.forEach(candidate => {
+        const item = document.createElement('div');
+        item.className = 'rabbit-metadata-hold-candidate';
+        item.append(makeText('span', 'rabbit-metadata-hold-source', providerLabels[candidate.source] || candidate.source));
+        item.append(makeText('span', 'rabbit-metadata-hold-candidate-title', candidate.title));
+        item.append(makeText('span', 'rabbit-metadata-hold-candidate-author', `작가: ${candidate.author}`));
+        const href = safeExternalUrl(candidate.url);
+        if (href) {
+          const link = document.createElement('a');
+          link.href = href;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = '제공처에서 열기';
+          item.append(link);
+        }
+        candidateList.append(item);
+      });
+      if (!candidates.length) candidateList.append(makeText('p', 'rabbit-setting-loading', '저장된 후보가 없습니다.'));
+      details.append(candidateList);
+      card.append(details);
+
+      const actions = document.createElement('div');
+      actions.className = 'rabbit-metadata-hold-card-actions';
+      const applyButton = document.createElement('button');
+      applyButton.type = 'button';
+      applyButton.className = 'rabbit-hold-action-button';
+      applyButton.dataset.holdApply = String(index);
+      applyButton.textContent = '동일 작품 적용';
+      applyButton.disabled = busy;
+      actions.append(applyButton);
+      card.append(actions);
+      list.append(card);
+    });
+    syncSelection();
+  };
+  const refreshHolds = async ({ preserveStatus = false } = {}) => {
+    if (busy) return;
+    if (!preserveStatus) setStatus('보류 목록을 불러오는 중입니다.');
+    if (refreshButton) refreshButton.disabled = true;
+    try {
+      const data = await postAction('metadata_list_holds');
+      holds = Array.isArray(data.holds) ? data.holds : [];
+      loadError = '';
+      renderHolds();
+      if (!preserveStatus) {
+        const warning = Array.isArray(data.warnings) && data.warnings.length ? ` ${data.warnings.join(' ')}` : '';
+        setStatus(holds.length ? `보류 작품 ${holds.length}건을 불러왔습니다.${warning}` : `보류 작품이 없습니다.${warning}`,
+          warning ? 'error' : '');
+      }
+      return true;
+    } catch (error) {
+      holds = [];
+      loadError = error.message || '보류 목록을 불러오지 못했습니다.';
+      renderHolds();
+      setStatus(loadError, 'error');
+      return false;
+    } finally {
+      syncSelection();
+    }
+  };
+  const applyHolds = async (items, oneButton = null) => {
+    if (busy || !items.length) return;
+    busy = true;
+    if (oneButton) {
+      oneButton.disabled = true;
+      oneButton.textContent = '검증 후 적용 중...';
+    }
+    renderHolds();
+    let applied = 0;
+    const failures = [];
+    for (let index = 0; index < items.length; index += 1) {
+      const hold = items[index];
+      setStatus(`${index + 1}/${items.length} 처리 중: ${hold.series_name}`);
+      try {
+        await postAction('metadata_confirm_same_work', hold.db_type, { book_id: hold.book_id });
+        applied += 1;
+      } catch (error) {
+        failures.push(`${hold.series_name}: ${error.message || '적용 실패'}`);
+      }
+    }
+    busy = false;
+    const refreshed = await refreshHolds({ preserveStatus: true });
+    let message = failures.length
+      ? `${applied}/${items.length}건 적용 완료, ${failures.length}건 보류 유지. ${failures.slice(0, 3).join(' · ')}`
+      : `${applied}건을 동일 작품으로 적용했습니다.`;
+    if (!refreshed) message += ' 적용 후 보류 목록을 새로고침하지 못했습니다.';
+    setStatus(message, failures.length ? (applied ? '' : 'error') : (refreshed ? 'success' : 'error'));
+    if (applied) notify(`${applied}건의 보류 작품 메타데이터를 적용했습니다.`, 'success');
+    if (failures.length) notify(`${failures.length}건은 적용되지 않았습니다. 보류 목록을 확인해 주세요.`, 'error');
+    syncSelection();
+  };
+
+  refreshButton?.addEventListener('click', () => refreshHolds());
+  selectAll?.addEventListener('change', () => {
+    list.querySelectorAll('[data-hold-select]').forEach(input => { input.checked = selectAll.checked; });
+    syncSelection();
+  });
+  list.addEventListener('change', event => {
+    if (event.target.matches('[data-hold-select]')) syncSelection();
+  });
+  list.addEventListener('click', event => {
+    const button = event.target.closest('[data-hold-apply]');
+    if (!button || busy) return;
+    const hold = holds[Number(button.dataset.holdApply)];
+    if (hold) applyHolds([hold], button);
+  });
+  applySelectedButton?.addEventListener('click', () => applyHolds(selectedHolds()));
+  refreshHolds();
+})();
 
 (function () {
   const button = root.querySelector('.rabbit-optimize-button');

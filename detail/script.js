@@ -14,9 +14,9 @@
     main_story: '본편', prequel: '전작', sequel: '후속작', spin_off: '스핀오프',
     side_story: '외전', alternative: '다른 판본', adaptation: '각색', other: '기타',
   };
-  let type = 'general';
-  let media = false;
-  let unit = '권';
+  let type = context.type || 'general';
+  let media = type === 'audiobook' || type === 'video';
+  let unit = type === 'audiobook' ? '트랙' : type === 'video' ? '편' : '권';
   let libraryName = '';
   let libraryId = context.libraryId || null;
   let canEdit = false;
@@ -58,6 +58,7 @@
     ['series_alias', '표시 제목'],
     ['author', '작가'],
     ['cover_artist', '그림작가'],
+    ['translator', '번역가'],
     ['publisher', '출판사'],
     ['publication_start_date', '연재시작일'],
     ['publication_end_date', '연재종료일'],
@@ -491,19 +492,27 @@
     const compact = text.replace(/[\s_-]+/g, '');
     const numeric = Number(text);
     if (Number.isFinite(numeric)) {
+      // BookOasis uses 19 and 20 for the distinct ComicInfo/Kavita levels
+      // "성인망가" (R18+) and "포르노". Preserve those levels when the raw
+      // books_lv string is not present in a plugin context.
+      if (numeric >= 20) return { level: 20, rank: 4, label: '포르노', specific: true };
+      if (numeric >= 19) return { level: 19, rank: 3, label: '성인망가', specific: true };
       if (numeric >= 18) return { level: 18, rank: 2, label: '18세 이용가', specific: false };
       if (numeric >= 15) return { level: 15, rank: 1, label: '15세 이용가', specific: false };
       if (numeric >= 0) return { level: 0, rank: 0, label: '전체 이용가', specific: false };
       return null;
     }
     if (['porn', 'porno', 'pornography', 'pornographic', '포르노', '포르노그래피'].includes(compact)) {
-      return { level: 18, rank: 4, label: '포르노', specific: true };
+      return { level: 20, rank: 4, label: '포르노', specific: true };
     }
     if (['adultonly18+', 'adultsonly18+', 'adultonly18', 'adultsonly18'].includes(compact)) {
-      return { level: 18, rank: 4, label: '포르노', specific: true };
+      return { level: 20, rank: 4, label: '포르노', specific: true };
+    }
+    if (['adultonly', 'adultsonly'].includes(compact)) {
+      return { level: 18, rank: 2, label: '18세 이용가', specific: true };
     }
     if (['성인망가', 'r18', 'r18+', 'x18+', 'xrated'].includes(compact) || /(?:r18|x-rated|청소년관람불가|성인망가)/i.test(text)) {
-      return { level: 18, rank: 3, label: '성인망가', specific: true };
+      return { level: 19, rank: 3, label: '성인망가', specific: true };
     }
     if (compact === 'm') return { level: 18, rank: 2, label: '18세 이용가', specific: true };
     if (['ma15', 'ma15+', 'm15', 'm15+'].includes(compact) || /15세\s*이상|청소년/i.test(text)) {
@@ -696,7 +705,7 @@
   }
 
   function metadataSnapshot() {
-    const keys = ['series_alias', 'localized_series', 'author', 'cover_artist', 'publisher',
+    const keys = ['series_alias', 'localized_series', 'author', 'cover_artist', 'translator', 'publisher',
       'summary', 'genre', 'tags', 'isbn', 'link', 'cover_image'];
     return JSON.stringify({
       meta: keys.map((key) => String(meta[key] || '')),
@@ -1261,6 +1270,15 @@
       || meta.document_publication_date || meta.publication_dates?.start || '';
   }
 
+  function completedVolumeCoverageStatus(explicitStatus, coverage) {
+    if (explicitStatus !== '완결' || !coverage || coverage.known !== true) return '';
+    const total = Number(coverage.total) || 0;
+    const missing = Number(coverage.missing) || 0;
+    if (total <= 0 || missing <= 0) return '';
+    const present = Math.max(0, Math.min(total, Number(coverage.present) || 0));
+    return '누락 (' + present + '/' + total + '권)';
+  }
+
   function renderInfo() {
     if (!detailDataReady) {
       const facts = $('[data-facts]');
@@ -1324,9 +1342,13 @@
         && !coverage.missing;
       const remoteCoverage = meta.publication_coverage || {};
       const incomplete = explicitStatus === '완결' && remoteCoverage.known && remoteCoverage.missing > 0;
+      const incompleteVolume = completedVolumeCoverageStatus(
+        explicitStatus, meta.publication_volume_coverage);
       const standalone = isStandalone();
       const status = standalone ? '단편' : incomplete
         ? '누락 (' + remoteCoverage.present + '/' + remoteCoverage.total + '화)'
+        : incompleteVolume
+        ? incompleteVolume
         : hasExplicitStatus
         ? explicitStatus
         : !hasChapterMetadata() && count === 1 && volume === 1 && comicFormat === 'special'
@@ -1835,8 +1857,9 @@
         ? editContentRatingValue()
         : key === 'link'
         ? split(meta[key]).join(', ')
-        : key === 'cover_artist'
-        ? (manualEmptyFields.has(key) ? '' : meta.cover_artist || meta.artist || '')
+        : key === 'cover_artist' || key === 'translator'
+        ? (manualEmptyFields.has(key) ? ''
+          : key === 'cover_artist' ? meta.cover_artist || meta.artist || '' : meta.translator || '')
         : key === 'release_date'
         ? (publicationDate() || '').slice(0, 10)
         : key === 'publication_start_date'
@@ -1948,6 +1971,7 @@
       let detailFieldsWarning = '';
       let bannerError = '';
       let coverArtistSaved = true;
+      let translatorSaved = true;
       if (type === 'general' || type === 'adult') {
         try {
           const result = await request('/api/media/context-menu/book/plugins/action', {
@@ -1972,6 +1996,7 @@
             }),
           });
           coverArtistSaved = result.cover_artist_saved !== false;
+          translatorSaved = result.translator_saved !== false;
           manualEmptyFields = new Set(result.manual_empty_fields || []);
           detailFieldsWarning = (result.warnings || []).join(' ');
         } catch (error) {
@@ -1980,7 +2005,10 @@
       }
       for (const [key] of activeEditFields()) {
         if (key === 'release_date' || key === 'publication_start_date' || key === 'publication_end_date' || key === 'manual_chapter_count') continue;
-        if (key !== 'cover_artist' || (!detailFieldsError && coverArtistSaved)) meta[key] = String(data.get(key) || '');
+        if ((key !== 'cover_artist' || (!detailFieldsError && coverArtistSaved))
+            && (key !== 'translator' || (!detailFieldsError && translatorSaved))) {
+          meta[key] = String(data.get(key) || '');
+        }
       }
       if (!detailFieldsError && (type === 'general' || type === 'adult')) {
         if (editingReleaseDate) {
@@ -2071,8 +2099,8 @@
       manualEmptyFields = new Set(Array.isArray(data.manual_empty_fields) ? data.manual_empty_fields : []);
       // A later manual/provider match may fill a previously cleared field.
       // Stored values then take precedence over the old empty-field marker.
-      for (const key of ['summary', 'genre', 'tags', 'cover_artist']) {
-        const value = String(meta[key] || '').trim();
+      for (const key of ['summary', 'genre', 'tags', 'cover_artist', 'translator']) {
+        const value = String(meta[key] || (key === 'translator' ? data.comicinfo?.translator : '') || '').trim();
         if (value && value !== '-' && value !== '등록된 설명이 없습니다.') manualEmptyFields.delete(key);
       }
       if ((data.files || []).some((file) => file.release_date)) manualEmptyFields.delete('release_date');
@@ -2127,7 +2155,8 @@
       meta.artist = manualEmptyFields.has('cover_artist') ? '' : meta.cover_artist && meta.cover_artist !== '-'
         ? meta.cover_artist
         : comicinfo.artist || '';
-      meta.translator = comicinfo.translator || '';
+      meta.translator = manualEmptyFields.has('translator') ? ''
+        : comicinfo.translator || meta.translator || '';
       meta.comicinfo_format = comicinfo.format || '';
       meta.comicinfo_count = comicinfo.count;
       meta.comicinfo_volume = comicinfo.volume;
@@ -2135,6 +2164,7 @@
       meta.is_standalone = data.is_standalone === true;
       meta.publication_final_volume_found = comicinfo.final_volume_found === true;
       meta.publication_available_volume_count = Number(comicinfo.available_volume_count) || 0;
+      meta.publication_volume_coverage = data.publication_volume_coverage || {};
       const storedPublicationStatus = String(meta.publication_status ?? '').trim();
       meta.publication_status_label = ['0', '1', '2'].includes(storedPublicationStatus)
         ? (meta.publication_status_label || '')
@@ -2318,7 +2348,8 @@
   }
 
   function activeEditFields() {
-    const base = contentKind !== 'book' && !isStandalone() ? fields : fields.flatMap(([key, label]) => key === 'publication_start_date'
+    const editableFields = media ? fields.filter(([key]) => key !== 'translator') : fields;
+    const base = contentKind !== 'book' && !isStandalone() ? editableFields : editableFields.flatMap(([key, label]) => key === 'publication_start_date'
       ? [['release_date', '출간일']]
       : key === 'publication_end_date' ? [] : [[key, label]]);
     return type === 'adult' ? base.flatMap((field) => field[0] === 'cover_artist'
@@ -2345,7 +2376,7 @@
       }
       input.type = key === 'manual_chapter_count' ? 'number' : key === 'release_date' || key === 'publication_start_date' || key === 'publication_end_date' ? 'date' : 'text';
       if (key === 'manual_chapter_count') { input.min = '1'; input.max = '1000000'; input.step = '1'; input.placeholder = '비워 두면 표시하지 않음'; }
-      input.maxLength = key === 'link' ? 2000 : key === 'cover_artist' ? 500 : 4000;
+      input.maxLength = key === 'link' ? 2000 : ['cover_artist', 'translator'].includes(key) ? 500 : 4000;
       if (key === 'link') input.placeholder = '여러 주소는 쉼표(,)로 구분';
       field.append(input);
       target.append(field);
@@ -2358,6 +2389,10 @@
     if (context.initialDetailData) {
       // No await on the prepared path: metadata is applied before first paint.
       loadDetailData(false, context.initialDetailData);
+      if (detailDataReady) {
+        renderHeader();
+        root.dataset.ready = 'true';
+      }
     }
   } catch (error) {
     console.warn('[Rabbit detail] 초기 화면 렌더링을 건너뛰었습니다.', error);
@@ -2529,7 +2564,7 @@
     const detailDataPromise = detailDataReady ? Promise.resolve(true) : loadDetailData(false);
     const detailLoaded = await detailDataPromise;
     if (!root.isConnected) return;
-    renderHeader();
+    if (root.dataset.ready !== 'true') renderHeader();
     root.dataset.ready = 'true';
     startMetadataRefresh();
   } catch (error) {

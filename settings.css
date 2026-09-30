@@ -122,6 +122,37 @@
 .rabbit-overwrite-kind-setting.is-disabled .rabbit-choice-label,
 .rabbit-cover-overwrite-kind-setting.is-disabled .rabbit-choice-label { cursor: not-allowed; }
 .rabbit-choice-all { border-color: rgba(96, 165, 250, .42); }
+.rabbit-metadata-hold-manager { width: 100%; padding: 1rem; border: 1px solid rgba(251, 191, 36, .28); border-radius: 12px; background: rgba(120, 53, 15, .08); box-sizing: border-box; }
+.rabbit-metadata-hold-help { margin: -.3rem 0 0; color: var(--app-text-muted, #94a3b8); font-size: .82rem; line-height: 1.5; }
+.rabbit-metadata-hold-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: .55rem; }
+.rabbit-metadata-hold-count { flex: 1 1 160px; color: var(--app-text-secondary, #cbd5e1); font-size: .84rem; }
+.rabbit-metadata-hold-toolbar button { min-height: 36px; }
+.rabbit-metadata-hold-toolbar button:disabled { opacity: .5; cursor: not-allowed; }
+.rabbit-hold-action-button { padding: .5rem .8rem; border: 1px solid rgba(59, 130, 246, .55); border-radius: 6px; background: rgba(59, 130, 246, .18); color: var(--app-text-primary, #e5e7eb); cursor: pointer; }
+.rabbit-hold-action-button:hover:not(:disabled) { background: rgba(59, 130, 246, .3); }
+.rabbit-hold-action-button:disabled { opacity: .55; cursor: not-allowed; }
+.rabbit-metadata-hold-status { min-height: 1.2rem; margin: 0; color: var(--app-text-muted, #94a3b8); font-size: .82rem; overflow-wrap: anywhere; }
+.rabbit-metadata-hold-status.is-error { color: #fb7185; }
+.rabbit-metadata-hold-status.is-success { color: #4ade80; }
+.rabbit-metadata-hold-list { display: grid; gap: .65rem; width: 100%; }
+.rabbit-metadata-hold-empty { padding: 1rem; border: 1px dashed rgba(148, 163, 184, .28); border-radius: 9px; color: var(--app-text-muted, #94a3b8); text-align: center; }
+.rabbit-metadata-hold-card { display: grid; gap: .65rem; min-width: 0; padding: .85rem; border: 1px solid rgba(251, 191, 36, .28); border-radius: 10px; background: rgba(15, 23, 42, .28); }
+.rabbit-metadata-hold-card-head { display: flex; align-items: flex-start; gap: .65rem; min-width: 0; }
+.rabbit-metadata-hold-card-head > label { display: inline-flex; align-items: flex-start; padding-top: .1rem; }
+.rabbit-metadata-hold-title-wrap { display: grid; gap: .2rem; flex: 1; min-width: 0; }
+.rabbit-metadata-hold-title { color: var(--app-text-primary, #f8fafc); font-weight: 700; overflow-wrap: anywhere; }
+.rabbit-metadata-hold-subtitle { color: var(--app-text-muted, #94a3b8); font-size: .78rem; overflow-wrap: anywhere; }
+.rabbit-metadata-hold-candidates { min-width: 0; padding: .55rem .7rem; border: 1px solid rgba(148, 163, 184, .18); border-radius: 8px; background: rgba(15, 23, 42, .18); }
+.rabbit-metadata-hold-candidates summary { color: #bfdbfe; font-size: .84rem; font-weight: 650; cursor: pointer; }
+.rabbit-metadata-hold-candidate-list { display: grid; gap: .45rem; margin-top: .6rem; }
+.rabbit-metadata-hold-candidate { display: grid; grid-template-columns: minmax(90px, 140px) minmax(0, 1fr); gap: .2rem .65rem; padding: .55rem; border-radius: 6px; background: rgba(148, 163, 184, .07); font-size: .82rem; }
+.rabbit-metadata-hold-source { grid-row: span 2; color: #7dd3fc; font-weight: 700; overflow-wrap: anywhere; }
+.rabbit-metadata-hold-candidate-title { color: var(--app-text-primary, #f8fafc); overflow-wrap: anywhere; }
+.rabbit-metadata-hold-candidate-author { color: var(--app-text-muted, #94a3b8); overflow-wrap: anywhere; }
+.rabbit-metadata-hold-candidate a { grid-column: 2; width: fit-content; color: #93c5fd; font-size: .76rem; }
+.rabbit-metadata-hold-card-actions { display: flex; justify-content: flex-end; }
+.rabbit-metadata-hold-card-actions button { min-height: 34px; }
+.rabbit-metadata-hold-card-actions button:disabled { cursor: wait; }
 
 @media (max-width: 768px) {
   .rabbit-settings-grid { grid-template-columns: 1fr; }
@@ -134,4 +165,10 @@
   .rabbit-conversion-arrow { align-self: center; margin: .2rem 0; transform: rotate(90deg); }
   .rabbit-remove-rule-button { width: 100%; margin-top: .3rem; }
   .rabbit-setting-input { width: 100%; }
+  .rabbit-metadata-hold-manager { padding: .7rem; }
+  .rabbit-metadata-hold-toolbar > button { flex: 1 1 100%; }
+  .rabbit-metadata-hold-select-all { flex: 0 0 auto; }
+  .rabbit-metadata-hold-candidate { grid-template-columns: minmax(0, 1fr); }
+  .rabbit-metadata-hold-source { grid-row: auto; }
+  .rabbit-metadata-hold-candidate a { grid-column: 1; }
 }
