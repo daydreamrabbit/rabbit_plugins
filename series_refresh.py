@@ -429,5 +429,3 @@ def start(provider, flock):
                 print(f'[RabbitPlugins-Series] 갱신 확인 실패: {type(error).__name__}: {error}', flush=True)
             time.sleep(60)
     threading.Thread(target=worker, name='rabbit-series-refresh', daemon=True).start()
-
-
