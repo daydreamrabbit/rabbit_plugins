@@ -18,7 +18,7 @@ vm.runInContext(code.slice(helperStart, helperEnd), context);
 context.invalidateSeriesList();
 assert.strictEqual(invalidations, 1, 'the core list refresh hook must be called');
 
-const refreshStart = code.indexOf('  async function refreshMetadataFromServer()');
+const refreshStart = code.indexOf('  async function refreshMetadataFromServer(');
 const refreshEnd = code.indexOf('\n  function startMetadataRefresh', refreshStart);
 const applyStart = code.indexOf('  async function applyMetadataResult(');
 const applyEnd = code.indexOf('\n  function renderSeries()', applyStart);
@@ -32,5 +32,14 @@ for (const [name, source] of [
 ]) {
   assert(source.includes('invalidateSeriesList();'), `${name} must invalidate the series list`);
 }
+
+assert(
+  code.slice(refreshStart, refreshEnd).includes('if (!changed && !force) return false;'),
+  'forced metadata refresh must reload even when the metadata snapshot is unchanged',
+);
+assert(
+  code.includes('refreshMetadataFromServer({ force: true })'),
+  'same-work confirmation must force a detail refresh after applying metadata',
+);
 
 console.log('PASS cover and metadata changes invalidate the mounted series list');

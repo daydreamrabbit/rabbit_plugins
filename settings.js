@@ -5,6 +5,8 @@
       const input = root.querySelector(`[name="${name}"]`);
       if (input && Object.prototype.hasOwnProperty.call(savedConfig, name)) input.checked = !!savedConfig[name];
     });
+  const deferredInput = root.querySelector('[name="metadata_deferred_minutes"]');
+  if (deferredInput) deferredInput.value = savedConfig.metadata_deferred_minutes ?? 0;
   const coverOverwriteInput = root.querySelector('[name="metadata_cover_overwrite"]');
   if (coverOverwriteInput && !Object.prototype.hasOwnProperty.call(savedConfig, 'metadata_cover_overwrite')) {
     coverOverwriteInput.checked = !!savedConfig.metadata_overwrite;
@@ -598,6 +600,8 @@
       const checkedAt = hold.checked_at ? new Date(hold.checked_at).toLocaleString('ko-KR') : '';
       titleWrap.append(makeText('span', 'rabbit-metadata-hold-subtitle',
         `${dbLabel} · ${libraryLabel}${hold.book_count ? ` · 파일 ${hold.book_count}개` : ''}${checkedAt ? ` · 보류 ${checkedAt}` : ''}`));
+      if (hold.auto_status) titleWrap.append(makeText('span', 'rabbit-metadata-hold-subtitle', hold.auto_status));
+      if (hold.auto_last_message) titleWrap.append(makeText('span', 'rabbit-metadata-hold-subtitle', `최근 처리: ${hold.auto_last_message}`));
       head.append(selectLabel, titleWrap);
       card.append(head);
 
@@ -716,6 +720,246 @@
   });
   applySelectedButton?.addEventListener('click', () => applyHolds(selectedHolds()));
   refreshHolds();
+})();
+
+(function () {
+  const list = root.querySelector('[data-author-repair-list]');
+  if (!list) return;
+  const scanButton = root.querySelector('[data-author-repair-scan]');
+  const applyButton = root.querySelector('[data-author-repair-apply]');
+  const selectAll = root.querySelector('[data-author-repair-select-all]');
+  const typeSelect = root.querySelector('[data-author-repair-type]');
+  const countNode = root.querySelector('[data-author-repair-count]');
+  const statusNode = root.querySelector('[data-author-repair-status]');
+  const providerLabels = { ridi: '리디', naver: '네이버시리즈', yes24: '예스24',
+    kyobo: '교보문고', series_db: 'Series.db', comicinfo: 'ComicInfo', embedded: '내부 메타데이터' };
+  let items = [];
+  let selected = new Set();
+  let busy = false;
+  let scanning = false;
+  let scanned = false;
+  const identity = item => `${item.db_type || typeSelect.value}:${item.book_id}`;
+  const repairable = item => item.status === 'repairable' && !!String(item.proposed_author || '').trim();
+  const makeText = (tag, className, text) => {
+    const element = document.createElement(tag);
+    element.className = className;
+    element.textContent = String(text || '');
+    return element;
+  };
+  const setStatus = (message, kind = '') => {
+    statusNode.textContent = message;
+    statusNode.className = `rabbit-author-repair-status${kind ? ` is-${kind}` : ''}`;
+  };
+  const postAction = async (actionId, type, context) => {
+    const response = await fetch('/api/media/context-menu/book/plugins/action', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type, plugin_id: pluginId, action_id: actionId, context }),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data || data.success !== true) {
+      throw new Error(data?.error || `요청에 실패했습니다. (HTTP ${response.status})`);
+    }
+    return data;
+  };
+  const syncControls = () => {
+    const candidates = items.filter(repairable);
+    const count = candidates.filter(item => selected.has(identity(item))).length;
+    const selectionBusy = busy && !scanning;
+    scanButton.disabled = busy;
+    typeSelect.disabled = busy;
+    applyButton.disabled = busy || count === 0;
+    selectAll.disabled = selectionBusy || candidates.length === 0;
+    selectAll.checked = candidates.length > 0 && count === candidates.length;
+    selectAll.indeterminate = count > 0 && count < candidates.length;
+    countNode.textContent = scanned
+      ? `검토 ${items.length}건 · 복구 가능 ${candidates.length}건 · 선택 ${count}건`
+      : '복구 대상을 찾아주세요.';
+    const byIdentity = new Map(items.map(item => [identity(item), item]));
+    list.querySelectorAll('[data-author-repair-select]').forEach(input => {
+      const item = byIdentity.get(input.dataset.authorRepairSelect);
+      input.disabled = selectionBusy || !item || !repairable(item);
+      input.checked = selected.has(input.dataset.authorRepairSelect);
+    });
+    list.setAttribute('aria-busy', String(busy));
+  };
+  const render = () => {
+    list.replaceChildren();
+    const candidates = items.filter(repairable);
+    if (!candidates.length) {
+      list.append(makeText('p', 'rabbit-metadata-hold-empty', scanned
+        ? '복구 근거가 확인된 글작가가 없습니다. 나머지 항목은 변경하지 않았습니다.'
+        : '찾기를 누르면 현재 글작가와 복구할 글작가를 비교할 수 있습니다.'));
+    }
+    candidates.forEach(item => {
+      const completed = ['applied', 'repaired'].includes(item.status);
+      const state = completed ? 'repaired' : repairable(item) ? 'repairable' : 'unresolved';
+      const card = makeText('article', `rabbit-author-repair-card is-${state}`, '');
+      const head = makeText('div', 'rabbit-metadata-hold-card-head', '');
+      const label = makeText('label', 'rabbit-choice-label', '');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.dataset.authorRepairSelect = identity(item);
+      checkbox.setAttribute('aria-label', `${item.series_name} 글작가 복구 선택`);
+      label.append(checkbox);
+      const title = makeText('div', 'rabbit-metadata-hold-title-wrap', '');
+      title.append(makeText('strong', 'rabbit-metadata-hold-title', item.series_name));
+      title.append(makeText('span', 'rabbit-metadata-hold-subtitle',
+        `${item.library_name || `라이브러리 ${item.library_id}`}${item.book_count ? ` · 파일 ${item.book_count}개` : ''}`));
+      head.append(label, title);
+      const comparison = makeText('div', 'rabbit-author-repair-comparison', '');
+      [[completed ? '복구 전 글작가' : '현재 글작가', item.current_author || '미지정', ''],
+        [completed ? '복구한 글작가' : '복구할 글작가', item.proposed_author || '확인 필요', ' rabbit-author-repair-proposed']]
+        .forEach(([caption, author, extra], index) => {
+          if (index) comparison.append(makeText('span', 'rabbit-conversion-arrow', '→'));
+          const credit = makeText('div', `rabbit-author-repair-credit${extra}`, '');
+          credit.append(makeText('span', '', caption), makeText('strong', '', author));
+          comparison.append(credit);
+        });
+      const evidence = makeText('div', 'rabbit-author-repair-evidence', '');
+      evidence.append(makeText('span', '', `근거: ${providerLabels[item.source] || item.source || '확인 중'}`));
+      if (item.reason) evidence.append(makeText('span', '', item.reason));
+      try {
+        const url = new URL(item.source_url || item.url || '');
+        if (['https:', 'http:'].includes(url.protocol)) {
+          const link = makeText('a', '', '근거 정보 열기');
+          link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer';
+          evidence.append(link);
+        }
+      } catch (_) { /* An evidence link is optional. */ }
+      card.append(head, comparison, evidence);
+      const outcome = {
+        applied: '글작가 복구 완료', repaired: '글작가 복구 완료', unchanged: '변경할 글작가 없음',
+        conflict: '현재 값이 달라져 복구에서 제외', read_failed: '내부 메타데이터를 읽지 못해 복구에서 제외',
+      }[item.status] || '근거 확인 필요 · 자동 복구에서 제외';
+      if (item.message || !repairable(item)) card.append(makeText('span', 'rabbit-author-repair-outcome',
+        item.message || outcome));
+      list.append(card);
+    });
+    syncControls();
+  };
+  const receiveScan = data => {
+    items = Array.isArray(data.items) ? data.items : [];
+    scanning = data.status === 'running';
+    selected = new Set([...selected].filter(key => items.some(item => repairable(item) && identity(item) === key)));
+    scanned = data.status !== 'idle';
+    const checked = Number(data.checked || 0);
+    const total = Number(data.total || 0);
+    const warnings = Array.isArray(data.warnings) ? data.warnings.join(' ') : '';
+    const progress = total ? `${checked}/${total}` : String(checked);
+    setStatus(`${progress}개 파일 확인${data.status === 'running' ? ' 중' : ' 완료'} · ${items.filter(repairable).length}개 작품 복구 가능.`
+      + `${data.status === 'running' ? ' 선택은 가능하며, 복구는 찾기가 끝나면 실행할 수 있습니다.' : ''}`
+      + `${data.status === 'interrupted' ? ' 찾기가 중단되었습니다. 다시 찾기를 눌러 확인해 주세요.' : ''}${warnings ? ` ${warnings}` : ''}`,
+      warnings || data.status === 'interrupted' ? 'error' : '');
+    render();
+  };
+  const followScan = async data => {
+    receiveScan(data);
+    while (data.status === 'running' && root.isConnected !== false) {
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      if (root.isConnected === false) break;
+      data = await postAction('author_repair_status', typeSelect.value, {});
+      receiveScan(data);
+    }
+  };
+  const scan = async () => {
+    if (busy) return;
+    busy = true;
+    setStatus('저장된 정보에서 잘못 변경된 글작가를 찾고 있습니다.');
+    syncControls();
+    try {
+      const data = await postAction('author_repair_scan', typeSelect.value, {});
+      selected = new Set();
+      await followScan(data);
+    } catch (error) {
+      setStatus(error.message || '복구 대상을 찾지 못했습니다.', 'error');
+    } finally {
+      busy = false;
+      render();
+    }
+  };
+  const apply = async () => {
+    if (busy) return;
+    const targets = items.filter(item => repairable(item) && selected.has(identity(item)));
+    if (!targets.length) return;
+    busy = true;
+    syncControls();
+    let updatedBooks = 0, updatedSeries = 0, skipped = 0;
+    const failures = [];
+    const warnings = [];
+    for (let index = 0; index < targets.length; index += 1) {
+      const item = targets[index];
+      setStatus(`${index + 1}/${targets.length} 글작가 복구 중: ${item.series_name}`);
+      try {
+        const data = await postAction('author_repair_apply', item.db_type || typeSelect.value,
+          { book_ids: [item.book_id] });
+        const books = Number(data.updated_books || 0);
+        updatedBooks += books;
+        updatedSeries += Number(data.updated_series || (books ? 1 : 0));
+        skipped += Number(data.skipped || 0);
+        const itemWarnings = Array.isArray(data.warnings) ? data.warnings.filter(Boolean) : [];
+        warnings.push(...itemWarnings);
+        const originalIdentity = identity(item);
+        const refreshed = Array.isArray(data.items) && data.items.find(value =>
+          String(value.library_id) === String(item.library_id) && value.series_name === item.series_name
+          && (value.db_type || typeSelect.value) === (item.db_type || typeSelect.value));
+        if (refreshed) Object.assign(item, refreshed);
+        else item.status = books ? 'applied' : 'conflict';
+        item.message = (books ? item.status === 'repairable'
+          ? `파일 ${books}개 복구 완료 · 남은 파일 복구 가능`
+          : `글작가 복구 완료 · 파일 ${books}개`
+          : item.status === 'applied' ? '이미 복구된 글작가 정보를 확인했습니다.'
+            : '현재 값이 달라졌거나 복구 근거를 확인할 수 없어 건너뛰었습니다.')
+          + (itemWarnings.length ? ` · ${itemWarnings.join(' ')}` : '');
+        selected.delete(originalIdentity);
+      } catch (error) {
+        item.message = error.message || '복구 실패';
+        failures.push(`${item.series_name}: ${item.message}`);
+      }
+      render();
+    }
+    busy = false;
+    render();
+    const message = `글작가 복구 ${updatedSeries}개 작품 · 파일 ${updatedBooks}개 완료`
+      + `${skipped ? ` · 건너뜀 ${skipped}건` : ''}${failures.length ? ` · 실패 ${failures.length}건. ${failures.slice(0, 3).join(' · ')}` : ''}`
+      + `${warnings.length ? ` · ${[...new Set(warnings)].slice(0, 3).join(' · ')}` : ''}`;
+    const resultKind = failures.length || warnings.length ? 'error' : 'success';
+    setStatus(message, resultKind);
+    if (typeof window.showToast === 'function') window.showToast(message, resultKind);
+  };
+  scanButton.addEventListener('click', scan);
+  applyButton.addEventListener('click', apply);
+  selectAll.addEventListener('change', () => {
+    selected = new Set(selectAll.checked ? items.filter(repairable).map(identity) : []);
+    syncControls();
+  });
+  list.addEventListener('change', event => {
+    const input = event.target;
+    if (!input.matches('[data-author-repair-select]') || input.disabled) return;
+    if (input.checked) selected.add(input.dataset.authorRepairSelect);
+    else selected.delete(input.dataset.authorRepairSelect);
+    syncControls();
+  });
+  typeSelect.addEventListener('change', () => {
+    items = []; selected = new Set(); scanned = false;
+    setStatus(''); render(); loadSavedStatus();
+  });
+  const loadSavedStatus = async () => {
+    if (busy) return;
+    busy = true;
+    syncControls();
+    try {
+      const data = await postAction('author_repair_status', typeSelect.value, {});
+      if (data.status && data.status !== 'idle') await followScan(data);
+    } catch (error) {
+      setStatus(error.message || '이전 복구 대상 목록을 불러오지 못했습니다.', 'error');
+    } finally {
+      busy = false;
+      render();
+    }
+  };
+  syncControls();
+  loadSavedStatus();
 })();
 
 (function () {

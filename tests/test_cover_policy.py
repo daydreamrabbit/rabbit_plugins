@@ -1,6 +1,7 @@
 import tempfile
 import json
 import unittest
+from unittest.mock import patch
 import zipfile
 from pathlib import Path
 from .. import rabbit_plugins as m
@@ -24,9 +25,11 @@ class PreferenceGateway:
         return self.config
 
     def fetch_all(self, query, params=()):
+        if 'FROM settings' in query:
+            return [{'key':k,'value':v} for k,v in self.settings.items() if k.startswith(m._EXTERNAL_COVER_PREFIX)]
         if 'FROM books b LEFT JOIN libraries' in query:
             return [{'id': 7, 'cover_image': self.cover, 'library_id': 2,
-                     'content_kind': 'manga'}]
+                     'content_kind': 'manga', 'file_path': '/book.cbz', 'metadata_locked': 0}]
         return []
 
     def execute(self, query, params=()):
@@ -227,10 +230,11 @@ class CoverPolicyTests(unittest.TestCase):
             'metadata_cover_overwrite_kinds': 'manga',
         })
         m._remember_external_cover(gateway, 7, '2/external.webp', 2, 'manga')
-        changed = m._reconcile_external_covers(PreferenceProvider(gateway), 'general')
+        with patch.object(m, '_stored_cover_exists', return_value=True):
+            changed = m._reconcile_external_covers(PreferenceProvider(gateway), 'general')
         self.assertEqual(changed, 1)
         self.assertEqual(gateway.cover, '2/external.webp')
-        self.assertEqual(gateway.updates[-1][1], ('2/external.webp', 7))
+        self.assertEqual(gateway.updates[-1][1], ('2/external.webp', 7, 2, 'internal.webp', '/book.cbz'))
 
     def test_delayed_scanner_cover_is_left_when_overwrite_is_disabled(self):
         gateway = PreferenceGateway(config={
@@ -239,7 +243,8 @@ class CoverPolicyTests(unittest.TestCase):
             'metadata_cover_overwrite': False,
         })
         m._remember_external_cover(gateway, 7, '2/external.webp', 2, 'manga')
-        changed = m._reconcile_external_covers(PreferenceProvider(gateway), 'general')
+        with patch.object(m, '_stored_cover_exists', return_value=True):
+            changed = m._reconcile_external_covers(PreferenceProvider(gateway), 'general')
         self.assertEqual(changed, 0)
         self.assertEqual(gateway.cover, 'internal.webp')
         self.assertEqual(gateway.updates, [])

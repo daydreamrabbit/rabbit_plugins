@@ -53,6 +53,12 @@
     </div>
 
     <div class="rabbit-setting-panel">
+      <label class="rabbit-setting-label" for="rabbit-metadata-deferred-minutes">자동 재시도 / 동일 작품 처리 대기 시간 (분)</label>
+      <input id="rabbit-metadata-deferred-minutes" class="rabbit-setting-input" type="number" min="0" max="10080" step="1" name="metadata_deferred_minutes" value="0">
+      <p>0은 사용 안 함입니다. 자동 수집을 켜면 조회 실패 작품을 지정 시간 후 재조회하고, 서로 다른 제공처의 단일 후보들로 보류된 작품은 동일 작품으로 자동 적용합니다. 기존 보류 후보는 제공처를 비활성화해도 처리합니다. 같은 제공처에 후보가 여럿이면 계속 보류합니다. 리디 429 제한 중에는 제한 해제까지 기다립니다. 서버가 켜져 있는 동안 약 30초 간격으로 확인합니다.</p>
+    </div>
+
+    <div class="rabbit-setting-panel">
       <label class="rabbit-setting-label" for="rabbit-yes24-api-key">예스24 Open API 키</label>
       <input id="rabbit-yes24-api-key" class="rabbit-setting-input" type="password" name="yes24_api_key" autocomplete="new-password" spellcheck="false" placeholder="yk_live_...">
       <p><a href="https://developers.yes24.com/docs/apikey" target="_blank" rel="noopener noreferrer">예스24 개발자센터에서 API 키 발급</a> 후 입력하세요. 키가 없으면 예스24 검색은 건너뜁니다.</p>
@@ -196,6 +202,34 @@
     <p class="rabbit-metadata-hold-status" data-hold-status role="status" aria-live="polite"></p>
     <div class="rabbit-metadata-hold-list" data-hold-list aria-live="polite">
       <p class="rabbit-setting-loading">보류 목록을 불러오는 중입니다.</p>
+    </div>
+  </section>
+
+  <section class="rabbit-setting rabbit-author-repair-manager" aria-labelledby="rabbit-author-repair-title">
+    <div class="rabbit-setting-group-heading">
+      <i class="fa-solid fa-user-pen" aria-hidden="true"></i>
+      <div>
+        <h3 id="rabbit-author-repair-title">잘못 변경된 글작가 복구</h3>
+        <p>찾기를 실행할 때 내부 메타데이터를 읽어 글작가를 비교합니다. 선택한 작품의 Writer(글작가)만 복구하며 다른 메타데이터는 보존합니다. 파일 재스캔은 하지 않습니다.</p>
+      </div>
+    </div>
+    <div class="rabbit-author-repair-toolbar">
+      <label class="rabbit-author-repair-scope">서재
+        <select class="rabbit-setting-input" data-author-repair-type>
+          <option value="general">일반 도서</option>
+          <option value="adult">성인 도서</option>
+        </select>
+      </label>
+      <button type="button" class="rabbit-add-library-button" data-author-repair-scan><i class="fa-solid fa-magnifying-glass"></i> 잘못 변경된 작가 찾기</button>
+      <span class="rabbit-author-repair-count" data-author-repair-count>복구 대상을 찾아주세요.</span>
+    </div>
+    <div class="rabbit-author-repair-toolbar">
+      <label class="rabbit-choice-label"><input type="checkbox" data-author-repair-select-all disabled> 복구 가능 항목 전체 선택</label>
+      <button type="button" class="rabbit-hold-action-button" data-author-repair-apply disabled>선택한 작품 글작가 복구</button>
+    </div>
+    <p class="rabbit-author-repair-status" data-author-repair-status role="status" aria-live="polite"></p>
+    <div class="rabbit-author-repair-list" data-author-repair-list tabindex="0" aria-label="글작가 복구 대상 목록">
+      <p class="rabbit-metadata-hold-empty">찾기를 누르면 현재 글작가와 복구할 글작가를 비교할 수 있습니다.</p>
     </div>
   </section>
 

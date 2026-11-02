@@ -153,6 +153,30 @@
 .rabbit-metadata-hold-card-actions { display: flex; justify-content: flex-end; }
 .rabbit-metadata-hold-card-actions button { min-height: 34px; }
 .rabbit-metadata-hold-card-actions button:disabled { cursor: wait; }
+.rabbit-author-repair-manager { width: 100%; min-width: 0; padding: 1rem; border: 1px solid rgba(96, 165, 250, .32); border-radius: 12px; background: rgba(30, 64, 175, .07); box-sizing: border-box; }
+.rabbit-author-repair-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: .55rem; width: 100%; min-width: 0; }
+.rabbit-author-repair-scope { display: inline-flex; align-items: center; gap: .45rem; color: var(--app-text-secondary, #cbd5e1); font-size: .84rem; }
+.rabbit-author-repair-scope select { width: auto; min-height: 36px; }
+.rabbit-author-repair-toolbar button { min-height: 36px; }
+.rabbit-author-repair-count { flex: 1 1 180px; color: var(--app-text-secondary, #cbd5e1); font-size: .84rem; overflow-wrap: anywhere; }
+.rabbit-author-repair-status { min-height: 1.2rem; color: var(--app-text-muted, #94a3b8); }
+.rabbit-author-repair-status.is-error { color: #fb7185; }
+.rabbit-author-repair-status.is-success { color: #4ade80; }
+.rabbit-author-repair-list { display: grid; gap: .65rem; width: 100%; min-width: 0; max-height: min(65vh, 700px); overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: rgba(148, 163, 184, .6) transparent; }
+.rabbit-author-repair-list:focus-visible { outline: 2px solid var(--app-accent, #60a5fa); outline-offset: 3px; }
+.rabbit-author-repair-card { display: grid; gap: .6rem; min-width: 0; padding: .85rem; border: 1px solid rgba(148, 163, 184, .22); border-radius: 10px; background: rgba(15, 23, 42, .24); }
+.rabbit-author-repair-card.is-repairable { border-color: rgba(96, 165, 250, .38); }
+.rabbit-author-repair-card.is-repaired { border-color: rgba(74, 222, 128, .38); }
+.rabbit-author-repair-card.is-unresolved { border-color: rgba(251, 191, 36, .28); }
+.rabbit-author-repair-comparison { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: .65rem; min-width: 0; }
+.rabbit-author-repair-credit { display: grid; gap: .2rem; min-width: 0; }
+.rabbit-author-repair-credit > span { color: var(--app-text-muted, #94a3b8); font-size: .76rem; }
+.rabbit-author-repair-credit > strong { color: var(--app-text-primary, #f8fafc); font-size: .86rem; overflow-wrap: anywhere; }
+.rabbit-author-repair-proposed > strong { color: #93c5fd; }
+.rabbit-author-repair-evidence { display: flex; flex-wrap: wrap; gap: .3rem .6rem; color: var(--app-text-muted, #94a3b8); font-size: .78rem; overflow-wrap: anywhere; }
+.rabbit-author-repair-evidence a { color: #93c5fd; }
+.rabbit-author-repair-outcome { font-size: .78rem; color: #fbbf24; overflow-wrap: anywhere; }
+.rabbit-author-repair-card.is-repaired .rabbit-author-repair-outcome { color: #4ade80; }
 
 @media (max-width: 768px) {
   .rabbit-settings-grid { grid-template-columns: 1fr; }
@@ -171,4 +195,8 @@
   .rabbit-metadata-hold-candidate { grid-template-columns: minmax(0, 1fr); }
   .rabbit-metadata-hold-source { grid-row: auto; }
   .rabbit-metadata-hold-candidate a { grid-column: 1; }
+  .rabbit-author-repair-manager { padding: .7rem; }
+  .rabbit-author-repair-toolbar > button { flex: 1 1 100%; }
+  .rabbit-author-repair-comparison { grid-template-columns: minmax(0, 1fr); gap: .35rem; }
+  .rabbit-author-repair-comparison > .rabbit-conversion-arrow { justify-self: start; margin: 0; transform: rotate(90deg); }
 }

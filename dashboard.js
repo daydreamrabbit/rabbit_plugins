@@ -318,9 +318,13 @@
     listObserver = new MutationObserver(() => {
       if (!shadowRoot.host.isConnected) return disconnectRefresh();
       const nextSignature = coreNewRow.__dashboardSignature || '';
-      if (!coreNewRow.__dashboardReady || !nextSignature.startsWith('general:')
+      if (!coreNewRow.__dashboardReady || !nextSignature.startsWith(dbType + ':')
           || nextSignature === coreSignature) return;
+      const initialCoreRender = !coreSignature;
       coreSignature = nextSignature;
+      // The widget and core row load together. That first render is not a
+      // metadata/progress change and must not duplicate the initial query.
+      if (initialCoreRender) return;
       if (refreshTimer) clearTimeout(refreshTimer);
       refreshTimer = setTimeout(refreshBooks, 150);
     });

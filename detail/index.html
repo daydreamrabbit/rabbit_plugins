@@ -30,6 +30,7 @@
         <progress data-series-progress max="100" value="0" aria-label="시리즈 진행률"></progress>
         <small data-reading-caption></small>
         <div class="ds-current" data-current></div>
+        <button type="button" class="ds-text-button ds-reset-listening" data-action="reset-listening" hidden><i class="fa-solid fa-rotate-left" aria-hidden="true"></i> 청취 기록 초기화</button>
       </section>
 
       <section class="ds-info" id="ds-info-panel" data-info-panel aria-labelledby="ds-info-title">
@@ -65,13 +66,6 @@
     </aside>
 
     <main class="ds-main">
-      <header class="ds-heading">
-        <div class="ds-library-path" data-library-path></div>
-        <h1 data-title></h1>
-        <p class="ds-original-title" data-original-title hidden></p>
-        <button type="button" class="ds-mobile-info-toggle" data-action="mobile-info-toggle" aria-expanded="false" aria-controls="ds-info-panel">정보</button>
-      </header>
-
       <section class="ds-metadata-hold" data-metadata-hold hidden aria-label="자동 메타데이터 수집 보류">
         <div class="ds-metadata-hold-head">
           <div><strong>자동 메타데이터 적용 보류</strong><p>동명 작품 후보의 작가가 달라 직접 확인이 필요합니다.</p></div>
@@ -82,6 +76,14 @@
         </div>
         <ul data-metadata-hold-candidates></ul>
       </section>
+
+      <header class="ds-heading">
+        <div class="ds-library-path" data-library-path></div>
+        <h1 data-title></h1>
+        <p class="ds-original-title" data-original-title hidden></p>
+        <button type="button" class="ds-mobile-info-toggle" data-action="mobile-info-toggle" aria-expanded="false" aria-controls="ds-info-panel">정보</button>
+      </header>
+
 
       <section class="ds-description" aria-label="책 소개">
         <div class="ds-section-heading ds-description-heading">
@@ -143,6 +145,7 @@
       <section class="ds-series" data-series-section hidden>
         <div class="ds-section-heading">
           <div><h2>시리즈 둘러보기</h2><p data-series-description></p></div>
+          <button type="button" class="ds-button ds-series-order" data-series-order aria-pressed="false" title="정순 · 역순으로 변경" aria-label="정순 · 역순으로 변경"><i class="fa-solid fa-arrow-down-short-wide" aria-hidden="true"></i></button>
         </div>
         <div class="ds-shelf" data-series-books></div>
       </section>
@@ -152,6 +155,7 @@
       <section class="ds-relations" data-relations-section hidden>
         <div class="ds-section-heading">
           <div><h2>관련작품</h2></div>
+          <button type="button" class="ds-button" data-action="manage-relations" hidden>연결 관리</button>
         </div>
         <div class="ds-books" data-relations></div>
       </section>

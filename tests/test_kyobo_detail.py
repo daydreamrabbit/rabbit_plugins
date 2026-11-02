@@ -56,15 +56,16 @@ class KyoboTests(unittest.TestCase):
    session['role']='admin'
    result=p.run_context_menu_action('adult','save_detail_metadata',{
     'series_name':'작품','cover_artist':'','release_date':'',
-    'manual_fields':{'cover_artist':'','release_date':'','genre':'','summary':'',
+    'manual_fields':{'cover_artist':'','release_date':'','genre':'','isbn':'','summary':'',
                      'teams':'새 그룹','locations':'','characters':''}})
    self.assertTrue(result['success'])
-   self.assertEqual(result['manual_empty_fields'],['cover_artist','genre','release_date','summary'])
+   self.assertEqual(result['manual_empty_fields'],['cover_artist','genre','isbn','release_date','summary'])
    self.assertIn(('UPDATE books SET teams = ? WHERE series_name = ? AND COALESCE(is_deleted, 0) = 0',('새 그룹','작품')),g.writes)
    self.assertEqual(json.loads(g.settings[m._series_dates_key(1,'작품')])['manual_empty_fields'],result['manual_empty_fields'])
    result=p.run_context_menu_action('adult','save_detail_metadata',{
     'series_name':'작품','cover_artist':'새 그림작가','release_date':'2024-01-02',
-    'manual_fields':{'cover_artist':'새 그림작가','release_date':'2024-01-02','genre':'판타지','summary':'소개'}})
+    'manual_fields':{'cover_artist':'새 그림작가','release_date':'2024-01-02','genre':'판타지',
+                     'isbn':'9791234567890','summary':'소개'}})
    self.assertTrue(result['success'])
    self.assertEqual(result['manual_empty_fields'],[])
 

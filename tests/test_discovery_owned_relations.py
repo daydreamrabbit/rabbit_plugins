@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -10,17 +11,36 @@ from .. import rabbit_plugins as m
 class OwnedRelationTests(unittest.TestCase):
     def _relations(self, title, native, related_native, localized, relation_field,
                    source_kind='manga', related_kind='manga', target_kind='manga',
-                   target_series_name=None, related_library_id=2, related_files=None):
+                   target_series_name=None, related_library_id=2, related_files=None,
+                   source_native_titles=None, related_native_titles=None,
+                   source_korean_titles=None, related_korean_titles=None,
+                   target_localized=None, visible=None, check_rating=None, queries=None):
+        source_native_titles = source_native_titles if source_native_titles is not None else [native]
+        related_native_titles = related_native_titles if related_native_titles is not None else [related_native]
+        source_korean_titles = source_korean_titles if source_korean_titles is not None else [title]
+        related_korean_titles = related_korean_titles if related_korean_titles is not None else []
         with tempfile.TemporaryDirectory() as directory:
             index = Path(directory) / 'lookup.sqlite'
             with sqlite3.connect(index) as db:
-                db.execute('CREATE TABLE series_lookup (id INTEGER, series_type TEXT, native_title TEXT, native_key TEXT, ko_titles TEXT, manga_updates_id TEXT)')
+                db.execute('CREATE TABLE series_lookup (id INTEGER, series_type TEXT, native_title TEXT, native_key TEXT, ko_titles TEXT, manga_updates_id TEXT, native_titles TEXT)')
                 db.execute('CREATE TABLE series_title_lookup (series_id INTEGER, title_key TEXT)')
-                db.executemany('INSERT INTO series_lookup VALUES (?, ?, ?, ?, ?, ?)', [
-                    (1, source_kind, native, m._title_key(native), f'["{title}"]', ''),
-                    (2, related_kind, related_native, m._title_key(related_native), '[]', ''),
+                db.execute('CREATE TABLE series_native_title_lookup (series_id INTEGER, title_key TEXT)')
+                db.executemany('INSERT INTO series_lookup VALUES (?, ?, ?, ?, ?, ?, ?)', [
+                    (1, source_kind, native, m._title_key(native), json.dumps(source_korean_titles), '',
+                     json.dumps(source_native_titles)),
+                    (2, related_kind, related_native, m._title_key(related_native), json.dumps(related_korean_titles), '',
+                     json.dumps(related_native_titles)),
                 ])
-                db.execute('INSERT INTO series_title_lookup VALUES (?, ?)', (1, m._series_title_key(title)))
+                db.executemany('INSERT INTO series_title_lookup VALUES (?, ?)', [
+                    (series_id, m._series_title_key(value))
+                    for series_id, titles in ((1, source_korean_titles), (2, related_korean_titles))
+                    for value in titles
+                ])
+                db.executemany('INSERT INTO series_native_title_lookup VALUES (?, ?)', [
+                    (series_id, m._title_key(value))
+                    for series_id, titles in ((1, source_native_titles), (2, related_native_titles))
+                    for value in titles
+                ])
 
             provider = object.__new__(m.RabbitPluginsMetadataProvider)
             provider._series_index = lambda: index
@@ -39,14 +59,80 @@ class OwnedRelationTests(unittest.TestCase):
             }]
 
             class Gateway:
-                def fetch_all(self, *_):
+                def fetch_all(self, query, params=()):
+                    if query.startswith('PRAGMA table_info('):
+                        return [{'name': name} for name in ('localized_series', 'document_volume_index', 'content_kind')]
+                    if queries is not None:
+                        queries.append((query, params))
                     return files
 
             target = {'id': 20, 'series_name': target_series_name or title, 'series_alias': None,
-                      'localized_series': localized, 'library_id': 13, 'content_kind': target_kind}
+                      'localized_series': localized if target_localized is None else target_localized,
+                      'library_id': 13, 'content_kind': target_kind}
             with patch('services.book_service.get_cover_image_with_t', side_effect=lambda cover, updated: cover):
                 return provider._discovery_data(
-                    Gateway(), target, '', [], lambda _: True, None, 'general', 10)
+                    Gateway(), target, '', [], visible or (lambda _: True), check_rating, 'general', 10)
+
+    def test_reverse_relations_accept_explicit_native_alias_with_korean_title(self):
+        title = '던전에서 만남을 추구하면 안 되는 걸까'
+        canonical = 'ダンジョンに出会いを求めるのは間違っているのだろうか'
+        alias = 'ダンジョンに出会いを求めるのは間違っているだろうか'
+        for field, kind, suffix in (
+            ('relationships_prequel', 'prequel', 'Ⅱ'),
+            ('relationships_main_story', 'main_story', '공식 앤솔로지'),
+        ):
+            with self.subTest(relation=kind):
+                source_title = title + ' ' + suffix
+                source_native = canonical + ' ' + suffix
+                result = self._relations(
+                    title, source_native, canonical, alias, field,
+                    target_series_name=source_title, target_localized=source_native,
+                    source_korean_titles=[source_title], related_korean_titles=[title],
+                    related_native_titles=[canonical, alias])
+                card = result['relations'][kind][0]
+                self.assertEqual(card['series_name'], title)
+                self.assertEqual(card['localized_series'], alias)
+
+    def test_source_without_korean_title_matches_only_explicit_native_alias(self):
+        canonical, alias, related = '原作の作品', '原作作品', '続編の作品'
+        result = self._relations(
+            '후속작', canonical, related, related, 'relationships_sequel',
+            target_series_name='로컬 원작', target_localized=alias,
+            source_korean_titles=[], source_native_titles=[canonical, alias],
+            related_korean_titles=['후속작'])
+        self.assertEqual(result['relations']['sequel'][0]['series_name'], '후속작')
+
+    def test_related_without_korean_title_is_queried_by_explicit_native_alias(self):
+        canonical, alias = '本編の外伝', '本編外伝'
+        queries = []
+        result = self._relations(
+            '로컬 외전', '本編', canonical, alias, 'relationships_side_story',
+            target_series_name='원작', target_localized='本編',
+            source_korean_titles=['원작'], related_korean_titles=[],
+            related_native_titles=[canonical, alias], queries=queries)
+        self.assertEqual(result['relations']['side_story'][0]['series_name'], '로컬 외전')
+        self.assertTrue(queries)
+        self.assertTrue(any(alias in params and 'b.localized_series' in query
+                            for query, params in queries))
+
+    def test_native_alias_matching_rejects_similar_titles_and_preserves_permissions(self):
+        canonical, alias = '本編の外伝', '本編外伝'
+        cases = (
+            ('unregistered spelling', '本編外傳', None, None),
+            ('longer title', alias + ' 別冊', None, None),
+            ('partial title', '本編', None, None),
+            ('hidden book', alias, lambda _: False, None),
+            ('rating denied', alias, None, lambda *_: False),
+        )
+        for name, localized, visible, check_rating in cases:
+            with self.subTest(case=name):
+                result = self._relations(
+                    '외전', '原作', canonical, localized, 'relationships_side_story',
+                    target_series_name='원작', target_localized='原作',
+                    source_korean_titles=['원작'], related_korean_titles=['외전'],
+                    related_native_titles=[canonical, alias], visible=visible,
+                    check_rating=check_rating)
+                self.assertEqual(result['relations'], {})
 
     def test_unowned_relation_without_korean_title_does_not_reuse_current_book(self):
         result = self._relations('나나', 'NANA', 'NANA Fanbook', '', 'relationships_spin_off')

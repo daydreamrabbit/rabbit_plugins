@@ -1,13 +1,35 @@
 """Run with: python -m unittest rabbit_plugins.tests.test_provider_search"""
 import unittest
 import json
+import requests
 from types import SimpleNamespace
 from unittest.mock import patch
 from .. import rabbit_plugins as m
 from .. import provider_search as api
+from .. import ridi_http
+
+
+def isolate_provider_state(test_case):
+    """Keep parser fixtures independent of live HTTP gates and prior attempts."""
+    for variable, value in (
+            (m.collection_history.priority_failed, ''),
+            (m.collection_history.fetch_failed, False)):
+        token = variable.set(value)
+        test_case.addCleanup(variable.reset, token)
+    for patcher in (
+            patch.object(ridi_http, 'cooling_down', return_value=False),
+            patch.object(ridi_http, 'get', side_effect=lambda *args, **kwargs: requests.get(*args, **kwargs)),
+            patch.object(api.SearchAdapter, '_source_cooldowns', {}),
+            patch('requests.sessions.Session.request', side_effect=AssertionError('Unexpected live HTTP in test')),
+            patch('urllib.request.urlopen', side_effect=AssertionError('Unexpected live HTTP in test'))):
+        patcher.start()
+        test_case.addCleanup(patcher.stop)
 
 
 class ProviderTests(unittest.TestCase):
+    def setUp(self):
+        isolate_provider_state(self)
+
     def provider(self):
         obj = object.__new__(m.RabbitPluginsMetadataProvider)
         obj.cache_get = lambda key: None
@@ -77,6 +99,7 @@ class ProviderTests(unittest.TestCase):
             'cover': 'https://image.yes24.com/goods/12345678/L',
             'link': 'https://www.yes24.com/product/goods/12345678',
             'adultYn': 'N', 'originalTitle': 'Clean Code',
+            'identifier': {'propertyID': 'UCI', 'value': 'G704-YES24-001'},
             'contentDetail': {'bookIntroduction': '개발자를 위한 책',
                               'tableOfContents': '1장 목차'},
         }
@@ -96,6 +119,7 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(row['metadata']['summary'], '개발자를 위한 책')
         self.assertNotIn('목차', row['metadata']['summary'])
         self.assertEqual(row['metadata']['isbn'], '9788966260959')
+        self.assertEqual(row['metadata']['uci'], 'G704-YES24-001')
         self.assertEqual(row['metadata']['release_date'], '2013-12-24')
         self.assertEqual(row['metadata']['author'], '로버트 C. 마틴')
         self.assertEqual(row['metadata']['genre'], 'IT 모바일')
@@ -306,6 +330,13 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(m._ridi_keyword_tags(keywords, metadata),
                          'GL/백합, 애니화, 평점4점이상, 별점100개이상')
 
+    def test_ridi_site_keywords_are_not_work_tags(self):
+        tags = '리디, RIDI, 리디북스, ridibooks, 책, webnovel, 웹툰, webtoon, comic, 현대배경, 사제지간'
+        self.assertEqual(m._ridi_keyword_tags(tags, {}), '현대배경, 사제지간')
+        self.assertEqual(m._metadata_content_tags(tags), '현대배경, 사제지간')
+        self.assertEqual(m._ridi_keyword_tags('리디, ridi, 책, webtoon', {}), '')
+        self.assertEqual(m._ridi_keyword_tags('책빙의, 웹툰작가, 현대배경', {}), '책빙의, 웹툰작가, 현대배경')
+
     def test_ridi_light_novel_category_and_dated_volumes(self):
         page = ('<script>var bookDetail = {"sub_genre":"lightnovel",'
                 '"genre_name":"만화 e북","category_name":"해외 라노벨",'
@@ -320,6 +351,29 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(dates['publication_end_date'], '2026-08-26')
         self.assertEqual(dates['release_dates_by_volume'],
                          {'1': '2024-08-07', '8': '2026-08-26'})
+
+    def test_ridi_explicit_adult_only_flag_is_a_genre(self):
+        adult_page = ('<script>var bookDetail = {"genre_name":"만화 e북",'
+                      '"category_name":"해외 순정","age_limit":"19",'
+                      '"is_adult_only":true};</script>')
+        self.assertEqual(m._ridi_genres(adult_page),
+                         ['성인', '만화 e북', '해외 순정'])
+
+        teen_page = ('<script>var bookDetail = {"genre_name":"만화 e북",'
+                     '"category_name":"해외 순정","age_limit":"15",'
+                     '"is_adult_only":false};</script>')
+        self.assertEqual(m._ridi_genres(teen_page), ['만화 e북', '해외 순정'])
+
+    def test_explicit_adult_genre_survives_lower_priority_provider(self):
+        provider = self.provider()
+        merged = provider._merge_metadata_candidates([
+            {'source': 'yes24', 'title': '작품', 'metadata': {
+                'genre': '해외 순정, 만화 e북', 'author': '작가'}},
+            {'source': 'ridi', 'title': '작품', 'metadata': {
+                'genre': '성인, 만화 e북, 해외 순정', 'author': '작가'}},
+        ], content_kind='manga')
+        self.assertEqual(merged['metadata']['genre'],
+                         '성인, 해외 순정, 만화 e북')
 
     def test_ridi_role_metadata_reads_translator_from_book_detail(self):
         page = ('<script>var bookDetail = {"authors":'
@@ -344,6 +398,91 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(roles['author'], '카규 쿠모')
         self.assertEqual(roles['cover_artist'], '쿠로세 코우스케')
         self.assertEqual(roles['translator'], '박경용')
+
+    def test_ridi_original_illustrator_is_kept_as_visual_credit(self):
+        page = ('<script>var bookDetail = {"authors":'
+                '{"illustrator":{"1":"타카하시 츠바사"},'
+                '"original_author":{"2":"아오이 세키나"},'
+                '"original_illustrator":{"3":"사보텐"}}};</script>')
+        roles = m._ridi_role_metadata(page)
+        self.assertEqual(roles['author'], '아오이 세키나')
+        self.assertEqual(roles['cover_artist'], '타카하시 츠바사, 사보텐')
+
+    def test_ridi_dual_role_label_uses_story_writer_for_illustrator_too(self):
+        page = ('<script>var bookDetail = {"authors":'
+                '{"story_writer":["사카이 마유"]}};</script>'
+                '<span>사카이 마유 글, 그림</span>')
+        roles = m._ridi_role_metadata(page)
+        self.assertEqual(roles['author'], '사카이 마유')
+        self.assertEqual(roles['cover_artist'], '사카이 마유')
+
+    def test_merged_artist_does_not_import_lower_provider_credit(self):
+        provider = self.provider()
+        merged = provider._merge_metadata_candidates([
+            {'source': 'ridi', 'title': '록킨헤븐', 'metadata': {
+                'author': '사카이 마유', 'summary': '소개', 'tags': '순정'}},
+            {'source': 'yes24', 'title': '록킨헤븐', 'metadata': {
+                'cover_artist': 'SAKAI Mayu', 'summary': '소개', 'tags': '순정'}},
+        ], content_kind='manga')
+        self.assertEqual(merged['metadata']['author'], '사카이 마유')
+        self.assertFalse(merged['metadata'].get('cover_artist'))
+
+    def test_zero_isbn_sentinels_are_removed_from_metadata(self):
+        self.assertNotIn('isbn', m._metadata_clean({'isbn': '0000000000000'}))
+        self.assertNotIn('isbn', m._metadata_clean({'isbn13': 'ISBN-13: 0000-0000-0000-0'}))
+        self.assertEqual(
+            m._metadata_clean({'isbn': '9791133657957'})['isbn'],
+            '9791133657957')
+        self.assertEqual(
+            m._metadata_clean({'isbn': '0000000000000', 'isbn13': '9791133657957'})['isbn'],
+            '9791133657957')
+
+    def test_uci_is_preserved_as_a_separate_identifier(self):
+        metadata = m._metadata_clean({
+            'isbn': '0000000000000',
+            'UCI': 'UCI: G704-001234.2026.1.001',
+        })
+        self.assertNotIn('isbn', metadata)
+        self.assertEqual(metadata['uci'], 'G704-001234.2026.1.001')
+        self.assertEqual(m._metadata_uci_from_jsonld({
+            'propertyID': 'UCI', 'value': 'G704-001234.2026.1.002',
+        }), 'G704-001234.2026.1.002')
+        self.assertEqual(m._metadata_clean({
+            'identifier': {'propertyID': 'UCI', 'value': 'G704-001234.2026.1.008'},
+        })['uci'], 'G704-001234.2026.1.008')
+        self.assertEqual(m._metadata_uci_value('—'), '')
+
+    def test_remote_provider_extracts_uci_meta_tag(self):
+        page = ('<meta property="books:uci" content="G704-001234.2026.1.003">'
+                '<meta property="og:title" content="작품">')
+        response = SimpleNamespace(text=page, raise_for_status=lambda: None)
+        with patch('requests.get', return_value=response):
+            metadata = m._remote_fetch_metadata(
+                'https://ridibooks.com/books/123456', 'ridi')
+        self.assertEqual(metadata['uci'], 'G704-001234.2026.1.003')
+
+    def test_uci_persistence_is_fill_only_unless_overwrite_is_enabled(self):
+        class Gateway:
+            def __init__(self):
+                self.values = {}
+
+            def get_setting(self, key, _default=None):
+                return {'value': self.values.get(key, '')}
+
+            def set_setting(self, key, value):
+                self.values[key] = value
+
+        gateway = Gateway()
+        self.assertTrue(m._remember_metadata_uci(
+            gateway, 17, 'G704-001234.2026.1.004'))
+        self.assertFalse(m._remember_metadata_uci(
+            gateway, 17, 'G704-001234.2026.1.005'))
+        self.assertEqual(m._read_metadata_uci(gateway, 17),
+                         'G704-001234.2026.1.004')
+        self.assertTrue(m._remember_metadata_uci(
+            gateway, 17, 'G704-001234.2026.1.005', overwrite=True))
+        self.assertEqual(m._read_metadata_uci(gateway, 17),
+                         'G704-001234.2026.1.005')
 
     def test_ridi_detail_roles_override_flattened_search_author(self):
         fetched = {
@@ -374,8 +513,9 @@ class ProviderTests(unittest.TestCase):
                 'title': '작품', 'author': '작가', 'publisher': '리디 출판사',
                 'summary': '리디 소개', 'genre': '판타지',
                 'release_date': '2024-01-01', 'tags': '공통, 회귀, 로맨스',
+                'uci': 'G704-RIDI',
                 'link': 'https://ridibooks.com/books/1', 'cover': 'ridi-cover',
-                'cover_by_volume': {'1': 'ridi-volume-1', '2': 'ridi-volume-2'},
+                'cover_by_volume': {'1': 'https://images.example/ridi-volume-1', '2': 'https://images.example/ridi-volume-2'},
             },
         }
         yes24 = {
@@ -384,10 +524,11 @@ class ProviderTests(unittest.TestCase):
             'metadata': {
                 'title': '작품', 'author': '작가', 'publisher': '예스24 출판사',
                 'summary': '예스24 소개', 'genre': '로맨스',
+                'uci': 'G704-YES24',
                 'tags': '공통, 성장물',
                 'link': 'https://www.yes24.com/product/goods/1',
                 'cover': 'yes24-cover',
-                'cover_by_volume': {'1': 'yes24-volume-1'},
+                'cover_by_volume': {'1': 'https://images.example/yes24-volume-1'},
             },
         }
         with patch.object(provider, '_series_db_remote_identity', return_value={}):
@@ -402,6 +543,7 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(metadata['summary'], '예스24 소개')
         self.assertEqual(metadata['genre'], '로맨스')
         self.assertEqual(metadata['release_date'], '2024-01-01')
+        self.assertEqual(metadata['uci'], 'G704-YES24')
         self.assertEqual(metadata['cover'], 'yes24-cover')
         self.assertEqual(metadata['tags'], '공통, 성장물, 회귀')
         self.assertEqual(set(metadata['link'].split(', ')), {
@@ -410,7 +552,7 @@ class ProviderTests(unittest.TestCase):
         })
         self.assertEqual(merged['cover_source'], 'yes24')
         self.assertEqual(merged['cover_by_volume'], {
-            '1': 'yes24-volume-1', '2': 'ridi-volume-2',
+            '1': 'https://images.example/yes24-volume-1', '2': 'https://images.example/ridi-volume-2',
         })
 
     def test_grouped_naver_and_kakao_catalogs_union_tags_and_links(self):
@@ -864,15 +1006,20 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(m._metadata_title_matches('작품', '작품의 다음 이야기', True))
         self.assertFalse(m._metadata_title_matches('작품', '작품의 다음 이야기'))
 
-    def test_failure_isolated(self):
+    def test_priority_failure_defers_lower_provider(self):
+        attempted = []
         def fake(source, query, matches, **kwargs):
+            attempted.append(source)
             if source == 'novelpia':
                 raise TimeoutError('fixture timeout')
             return [self.row(source)]
         with patch.object(m, 'search_additional_provider', fake), patch.object(m, 'search_novelpia_author', return_value=([], [])):
             rows = self.provider()._search_metadata('작품', {'metadata_sources': 'novelpia,munpia'},
                                                     content_kind='novel', manual=True)
-        self.assertEqual([r['source'] for r in rows], ['munpia'])
+        self.assertEqual(rows, [])
+        self.assertEqual(attempted, ['novelpia'])
+        self.assertEqual(m.collection_history.priority_failed.get(), 'novelpia')
+        self.assertTrue(m.collection_history.fetch_failed.get())
 
     def test_webtoon_duplicate_credits(self):
         adapter = api.SearchAdapter(lambda q,t: True)
@@ -904,6 +1051,8 @@ class ProviderTests(unittest.TestCase):
                 return {'content_kind': 'novel'}
             def get_setting(self, *args):
                 return None
+            def set_setting(self, *args):
+                pass
         p.get_db_gateway = lambda *a: Gateway()
         p.get_plugin_config = lambda *a: {'metadata_sources': 'munpia'}
         applied = []

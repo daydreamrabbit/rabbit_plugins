@@ -3,6 +3,19 @@ from unittest.mock import patch
 from flask import Flask,session
 from .. import rabbit_plugins as m
 class WidgetTests(unittest.TestCase):
+ def test_selected_series_does_not_recheck_every_volume(self):
+  p=object.__new__(m.RabbitPluginsMetadataProvider)
+  p.get_plugin_config=lambda *a:{'home_library_sections':[{'library_id':1,'limit':2}]}
+  class Gateway:
+   def fetch_all(self,*a):return [dict(id=i,library_id=1,series_name='A' if i<50 else 'B',title='title') for i in range(1,51)]
+  p.get_db_gateway=lambda *a:Gateway()
+  checks=[]
+  app=Flask('dedup-widget-test');app.secret_key='fixture'
+  with app.test_request_context('/'),patch('services.category_service.CategoryService.get_libraries',return_value=[{'id':1,'name':'library'}]),patch.object(m,'_load_core_dependencies',return_value=({'check_book_rating_permission':lambda db,bid:(checks.append(bid) or True)},None)),patch('services.book_service.get_cover_image_with_t',return_value='cover'):
+   session.update(user_id=1,role='admin',content_rating_max=18)
+   data=p._home_recently_added('general')
+   self.assertEqual([x['id'] for x in data['items'] if 'id' in x],[1,50])
+   self.assertEqual(checks,[1,50])
  def test_adult_has_separate_selection_and_access_check(self):
   p=object.__new__(m.RabbitPluginsMetadataProvider)
   p.get_plugin_config=lambda *a:{'home_library_sections':[{'library_id':99}], 'home_adult_library_sections':[{'library_id':1,'limit':1}]}

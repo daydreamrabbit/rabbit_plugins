@@ -55,6 +55,8 @@ class DetailArchiveIoTests(unittest.TestCase):
                 'release_date': '2024-01-02', 'publication_status': '2',
                 'document_volume_index': 1, 'document_volume_count': 3,
                 'translator': '박경용',
+                'metadata_title': '떠나가는 여름과 돌아오는 가을', 'title_alias': '사용자 권별 제목',
+                'link': 'https://ridibooks.com/books/100001',
             }
             file_row = {
                 **book, 'created_at': '2024-01-02', 'total_pages': 0, 'pages_read': 0,
@@ -73,6 +75,8 @@ class DetailArchiveIoTests(unittest.TestCase):
                     return [dict(file_row)] if 'LEFT JOIN user_progress' in sql else []
 
                 def get_setting(self, *_args):
+                    if _args and _args[0] == m._metadata_uci_key(1):
+                        return {'value': 'G704-001234.2026.1.006'}
                     return {'value': '{}'}
 
             provider = object.__new__(m.RabbitPluginsMetadataProvider)
@@ -99,7 +103,11 @@ class DetailArchiveIoTests(unittest.TestCase):
             self.assertTrue(result['success'])
             self.assertEqual(result['comicinfo']['summary'], 'YAML 소개')
             self.assertEqual(result['comicinfo']['translator'], '박경용')
+            self.assertEqual(result['comicinfo']['uci'], 'G704-001234.2026.1.006')
             self.assertEqual(result['files'][0]['file_path'], media_path)
+            self.assertEqual(result['files'][0]['metadata_title'], '떠나가는 여름과 돌아오는 가을')
+            self.assertEqual(result['files'][0]['title_alias'], '사용자 권별 제목')
+            self.assertEqual(result['files'][0]['link'], 'https://ridibooks.com/books/100001')
             self.assertEqual(result['publication_volume_coverage'], {
                 'known': True, 'present': 1, 'total': 3, 'missing': 2,
             })

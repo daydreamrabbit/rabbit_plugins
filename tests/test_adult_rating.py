@@ -35,6 +35,9 @@ class AdultRatingTests(unittest.TestCase):
             def set_setting(self, key, value):
                 self.settings[key] = value
 
+            def execute(self, query, params=()):
+                self.settings.pop(params[0], None)
+
         self.gateway = Gateway()
         self.provider = object.__new__(plugin.RabbitPluginsMetadataProvider)
         self.provider.get_db_gateway = lambda db_type: self.gateway
@@ -57,6 +60,16 @@ class AdultRatingTests(unittest.TestCase):
             self.assertEqual(self.provider.get_rating_widget_data('adult', self.context)['my_rating'], 4.5)
             self.assertEqual(len(self.gateway.settings), 2)
 
+    def test_sort_export_uses_current_user_not_average_or_another_user(self):
+        with self.app.test_request_context('/'):
+            self._session()
+            self.provider.submit_rating('adult', self.context, 4.5)
+            self._session(user_id=2)
+            self.provider.submit_rating('adult', self.context, 3)
+            self.assertEqual(list(self.provider.get_sort_ratings('adult')['ratings'].values()), [3])
+            self._session()
+            self.assertEqual(list(self.provider.get_sort_ratings('adult')['ratings'].values()), [4.5])
+
     def test_denied_access_and_invalid_rating_never_write(self):
         with self.app.test_request_context('/'):
             self._session(adult_access=0)
@@ -70,6 +83,21 @@ class AdultRatingTests(unittest.TestCase):
             self.gateway.allowed = False
             self.assertFalse(self.provider.submit_rating('adult', self.context, 5)['success'])
             self.assertEqual(self.gateway.settings, {})
+
+    def test_cancel_removes_only_current_user_and_is_idempotent(self):
+        with self.app.test_request_context('/'):
+            self._session()
+            self.provider.submit_rating('adult', self.context, 4.5)
+            self._session(user_id=2)
+            self.provider.submit_rating('adult', self.context, 3)
+            self._session()
+            result = self.provider.cancel_rating('adult', self.context)
+            self.assertEqual((result['count'], result['average'], result['my_rating']), (1, 3, None))
+            self.assertEqual(len(self.gateway.settings), 1)
+            self.assertTrue(self.provider.cancel_rating('adult', self.context)['success'])
+            self._session(adult_access=0)
+            self.assertFalse(self.provider.cancel_rating('adult', self.context)['success'])
+            self.assertEqual(len(self.gateway.settings), 1)
 
 
 if __name__ == '__main__':
