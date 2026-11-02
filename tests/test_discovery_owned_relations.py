@@ -14,7 +14,8 @@ class OwnedRelationTests(unittest.TestCase):
                    target_series_name=None, related_library_id=2, related_files=None,
                    source_native_titles=None, related_native_titles=None,
                    source_korean_titles=None, related_korean_titles=None,
-                   target_localized=None, visible=None, check_rating=None, queries=None):
+                   target_localized=None, visible=None, check_rating=None, queries=None,
+                   extra_index_rows=None, extra_source_rows=None, root_fields=None):
         source_native_titles = source_native_titles if source_native_titles is not None else [native]
         related_native_titles = related_native_titles if related_native_titles is not None else [related_native]
         source_korean_titles = source_korean_titles if source_korean_titles is not None else [title]
@@ -31,6 +32,8 @@ class OwnedRelationTests(unittest.TestCase):
                     (2, related_kind, related_native, m._title_key(related_native), json.dumps(related_korean_titles), '',
                      json.dumps(related_native_titles)),
                 ])
+                if extra_index_rows:
+                    db.executemany('INSERT INTO series_lookup VALUES (?, ?, ?, ?, ?, ?, ?)', extra_index_rows)
                 db.executemany('INSERT INTO series_title_lookup VALUES (?, ?)', [
                     (series_id, m._series_title_key(value))
                     for series_id, titles in ((1, source_korean_titles), (2, related_korean_titles))
@@ -47,7 +50,9 @@ class OwnedRelationTests(unittest.TestCase):
             root = {field: '' for field in m.RELATION_FIELDS.values()}
             root.update({relation_field: '[2]',
                          'source_manga_updates_response_recommendations': '[]'})
-            provider._source_series_rows = lambda ids: {1: root} if 1 in ids else {}
+            root.update(root_fields or {})
+            source_rows = {1: root, **(extra_source_rows or {})}
+            provider._source_series_rows = lambda ids: {key: source_rows[key] for key in ids if key in source_rows}
             provider._similar_data = lambda *args, **kwargs: {'items': []}
             provider._random_genre_tag_recommendations = lambda *args, **kwargs: []
             files = related_files or [{
@@ -72,6 +77,37 @@ class OwnedRelationTests(unittest.TestCase):
             with patch('services.book_service.get_cover_image_with_t', side_effect=lambda cover, updated: cover):
                 return provider._discovery_data(
                     Gateway(), target, '', [], visible or (lambda _: True), check_rating, 'general', 10)
+
+    def test_earlier_prequel_does_not_become_main_story(self):
+        files = []
+        for book_id, title, native in ((10, '직전작', '前作'), (11, '더 앞선 전작', '以前'),
+                                       (12, '본편', '本編'), (13, '다른 본편', '別本編')):
+            files.append({
+                'id': book_id, 'library_id': 2, 'content_kind': 'manga',
+                'series_name': title, 'series_alias': None, 'localized_series': native,
+                'cover_image': '', 'cover_updated_at': None, 'volume_index': None,
+                'author': '', 'publisher': '', 'books_lv': '', 'genre': '', 'tags': '',
+                'file_path': '', 'file_format': '', 'file_mtime': None, 'file_size': 0,
+            })
+        for explicit_main in (False, True):
+            with self.subTest(explicit_main=explicit_main):
+                result = self._relations(
+                    '현재 앤솔로지', '現在', '前作', '前作', 'relationships_prequel',
+                    target_localized='現在', related_korean_titles=['직전작'], related_files=files,
+                    root_fields={'relationships_main_story': '[4]'} if explicit_main else {},
+                    extra_index_rows=[
+                        (3, 'manga', '以前', m._title_key('以前'), json.dumps(['더 앞선 전작']), '', json.dumps(['以前'])),
+                        (4, 'manga', '本編', m._title_key('本編'), json.dumps(['본편']), '', json.dumps(['本編'])),
+                        (5, 'manga', '別本編', m._title_key('別本編'), json.dumps(['다른 본편']), '', json.dumps(['別本編'])),
+                    ],
+                    extra_source_rows={2: {'relationships_v2': json.dumps([
+                        {'relation_type': 'prequel', 'to_series_id': 3},
+                        {'relation_type': 'prequel', 'to_series_id': 3},
+                        {'relation_type': 'prequel', 'to_series_id': 1},
+                        {'relation_type': 'parent', 'to_series_id': 5 if explicit_main else 4},
+                    ])}})
+                self.assertEqual([card['series_name'] for card in result['relations']['main_story']], ['본편'])
+                self.assertEqual([card['series_name'] for card in result['relations']['prequel']], ['직전작', '더 앞선 전작'])
 
     def test_reverse_relations_accept_explicit_native_alias_with_korean_title(self):
         title = '던전에서 만남을 추구하면 안 되는 걸까'

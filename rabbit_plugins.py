@@ -63,7 +63,7 @@ from flask import g, has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '4.3.0'
+PLUGIN_VERSION = '4.3.1'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -7575,12 +7575,15 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                         recommendations.append(value)
 
         if relation_ids['prequel']:
+            inherit_main = not relation_ids['main_story']
             for row in self._source_series_rows(relation_ids['prequel']).values():
                 row_relations = _series_relation_ids(row)
                 for kind in ('main_story', 'prequel'):
+                    if kind == 'main_story' and not inherit_main:
+                        continue
                     for value in row_relations[kind]:
-                        if value not in source_ids and value not in relation_ids['prequel'] and value not in relation_ids['main_story']:
-                            relation_ids['main_story'].append(value)
+                        if value not in source_ids and value not in relation_ids[kind]:
+                            relation_ids[kind].append(value)
 
         all_ids = list(dict.fromkeys(value for values in relation_ids.values() for value in values))
         slugs = list(dict.fromkeys(key for value in recommendations for key in _recommendation_keys(value)))
