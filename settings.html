@@ -22,6 +22,13 @@
     <label class="rabbit-setting-label" for="rabbit-series-db-path">Series.db 경로</label>
     <input id="rabbit-series-db-path" class="rabbit-setting-input" type="text" name="series_db_path" placeholder="/app/db/series.full.sqlite">
     <p>BookOasis 컨테이너 안에서 접근할 경로를 입력하세요. 비워두면 <code>/app/db/series.full.sqlite</code>를 사용합니다.</p>
+    <label class="rabbit-setting-toggle">
+      <input type="checkbox" name="series_auto_update_enabled" checked>
+      <span>Series DB 매일 자동 갱신</span>
+    </label>
+    <p>설정을 저장하면 적용됩니다. 기본값은 켜짐입니다. 처음에는 바로 확인하고, 이후 매일 12:30(한국 시간)에 새 덤프를 확인합니다. 서버가 꺼져 있으면 다음 실행 때 확인합니다.</p>
+    <p>새 덤프를 받으면 자동 최적화·검증 후 같은 폴더의 <code>series.연도.월.일.sqlite</code>로 교체하고 경로를 자동 변경합니다. 이전 자동 생성 날짜 파일은 백업하지 않습니다. 대용량 다운로드와 최적화용 여유 공간이 필요합니다.</p>
+    <p data-series-refresh-status role="status" aria-live="polite">자동 갱신 상태를 확인하고 있습니다.</p>
     </section>
 
     <section class="rabbit-setting">

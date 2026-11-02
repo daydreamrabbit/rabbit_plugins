@@ -1,6 +1,6 @@
 (function () {
   const savedConfig = (typeof config === 'object' && config) ? config : {};
-  ['metadata_auto_enabled', 'metadata_collect_cover', 'metadata_manual_overwrite', 'metadata_overwrite', 'metadata_cover_overwrite', 'support_summary_html']
+  ['metadata_auto_enabled', 'metadata_collect_cover', 'metadata_manual_overwrite', 'metadata_overwrite', 'metadata_cover_overwrite', 'support_summary_html', 'series_auto_update_enabled']
     .forEach(name => {
       const input = root.querySelector(`[name="${name}"]`);
       if (input && Object.prototype.hasOwnProperty.call(savedConfig, name)) input.checked = !!savedConfig[name];
@@ -1073,4 +1073,34 @@
       }
     }
   }, true);
+})();
+
+(function () {
+  const statusNode = root.querySelector('[data-series-refresh-status]');
+  if (!statusNode) return;
+  const pathInput = root.querySelector('[name="series_db_path"]');
+  let lastPath = (typeof config === 'object' && config?.series_db_path) || '';
+  const poll = async () => {
+    while (root.isConnected !== false) {
+      try {
+        const response = await fetch('/api/media/context-menu/book/plugins/action', {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'general', plugin_id: pluginId, action_id: 'series_refresh_status', context: {} }),
+        });
+        const data = await response.json();
+        if (!response.ok || data.success !== true) throw new Error(data.error || '갱신 상태를 불러오지 못했습니다.');
+        const state = data.state || {};
+        const checked = state.checked_at || state.updated_at;
+        const checkedText = checked ? ' · 마지막 확인: ' + new Date(checked * 1000).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }) : '';
+        statusNode.textContent = (data.enabled ? data.schedule : '자동 갱신 꺼짐')
+          + ' · ' + (state.message || '첫 확인을 기다리고 있습니다.') + checkedText;
+        if (pathInput && pathInput.value === lastPath && document.activeElement !== pathInput) pathInput.value = data.active_path;
+        lastPath = data.active_path;
+      } catch (error) {
+        statusNode.textContent = error.message || '갱신 상태를 불러오지 못했습니다.';
+      }
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+  };
+  poll();
 })();

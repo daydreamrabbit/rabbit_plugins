@@ -63,7 +63,7 @@ from flask import g, has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '4.2.1'
+PLUGIN_VERSION = '4.3.0'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -3975,6 +3975,12 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         # Adult metadata collection must use those rules too; an explicit adult
         # configuration may still override individual shared values.
         shared = super().get_plugin_config('general', {}) or {}
+        # A plugin-manager hot reload need not rerun the core's boot hook.
+        # Start on the next real plugin request as well; background calls do
+        # not have a request context and cannot recurse here.
+        if has_request_context() and request.endpoint:
+            from . import series_refresh
+            series_refresh.start(self, fcntl)
         if db_type in (None, '', 'general'):
             return shared or ({} if default is None else default)
         local = super().get_plugin_config(db_type, {}) or {}
@@ -3984,6 +3990,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
     config_schema = [
         {'key': 'support_summary_html', 'label': 'ComicInfo 소개 이미지 표시', 'type': 'checkbox', 'default': True},
         {'key': 'series_db_path', 'label': 'Series.db 경로', 'type': 'text', 'default': ''},
+        {'key': 'series_auto_update_enabled', 'label': 'Series DB 매일 자동 갱신', 'type': 'checkbox', 'default': True},
         {'key': 'exclude_tags', 'label': '제외할 태그', 'type': 'text', 'default': ''},
         {'key': 'exclude_genres', 'label': '제외할 장르', 'type': 'text', 'default': ''},
         {'key': 'metadata_deferred_minutes', 'label': '자동 재시도 / 동일 작품 대기 시간 (분)', 'type': 'number', 'default': 0},
@@ -4028,7 +4035,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         'provider': 'github-raw',
         'raw_base_url': 'https://raw.githubusercontent.com/daydreamrabbit/rabbit_plugins/main',
         'files': [
-            'rabbit_plugins.py', 'provider_search.py', '__init__.py', 'VERSION', 'series_db_optimize.sql',
+            'rabbit_plugins.py', 'provider_search.py', '__init__.py', 'VERSION', 'series_db_optimize.sql', 'series_refresh.py',
             'manual_relations.py', 'collection_history.py', 'ridi_http.py', 'deferred_metadata.py', 'author_repair.py',
             'assets/ridi-age-placeholder.webp',
             'settings.html', 'settings.css', 'settings.js',
@@ -4050,6 +4057,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         """
         from .deferred_metadata import start
         start(self, fcntl)
+        from . import series_refresh
+        series_refresh.start(self, fcntl)
         global _COVER_RECONCILE_STARTED
         with _COVER_RECONCILE_START_LOCK:
             if _COVER_RECONCILE_STARTED:
@@ -6454,6 +6463,12 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         return self._queue_auto_collect(db_type, event)
 
     def run_context_menu_action(self, db_type, action_id, context):
+        if action_id == 'series_refresh_status':
+            if not has_request_context() or session.get('role') != 'admin':
+                return {'success': False, 'error': '관리자만 Series DB 갱신 상태를 확인할 수 있습니다.'}
+            from . import series_refresh
+            series_refresh.start(self, fcntl)
+            return series_refresh.status(self)
         if action_id in ('author_repair_scan', 'author_repair_status', 'author_repair_apply'):
             if not has_request_context() or session.get('role') != 'admin':
                 return {'success': False, 'error': '관리자만 글작가 복구를 실행할 수 있습니다.'}
@@ -7193,7 +7208,18 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             except RuntimeError:
                 root_path = Path('/app')
             path = root_path / path
-        return path.resolve()
+        path = path.resolve()
+        if not path.is_file() and re.fullmatch(r'series\.\d{4}\.\d{2}\.\d{2}\.sqlite', path.name):
+            try:
+                state = json.loads((path.parent / '.rabbit-series-refresh-state.json').read_text(encoding='utf-8'))
+                name = str(state.get('active_name') or '')
+                if re.fullmatch(r'series\.\d{4}\.\d{2}\.\d{2}\.sqlite', name):
+                    managed = path.parent / name
+                    if managed.is_file():
+                        return managed
+            except (OSError, ValueError, TypeError, AttributeError):
+                pass
+        return path
 
     def _optimize_series_db(self):
         path = self._series_db_path()
