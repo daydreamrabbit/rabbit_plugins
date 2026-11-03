@@ -63,7 +63,7 @@ from flask import g, has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '4.3.2'
+PLUGIN_VERSION = '4.3.3'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -1347,6 +1347,23 @@ def _volume_file_coverage(files, total):
         'total': total,
         'missing': max(0, total - present),
     }
+
+
+def _detail_holdings_coverage(files, publication_status):
+    """Presentation only: keep source Count/status intact and never reopen archives."""
+    try:
+        from services.series_coverage import coverage
+    except ImportError:
+        # Older cores have no shared coverage helper. Do not require a core upgrade.
+        if str(publication_status or '').strip() != '2':
+            return {'holdings_status': 'unknown', 'holdings_label': ''}
+        totals = [_detail_file_metadata(row).get('count') for row in files or ()]
+        total = max((_metadata_number(value, integer_only=True) or 0 for value in totals), default=0)
+        current = _volume_file_coverage(files, total)
+        missing = current.get('known') and current.get('missing', 0) > 0
+        return {'holdings_status': 'missing' if missing else 'unknown',
+                'holdings_label': ('누락 (' + str(current['present']) + '/' + str(current['total']) + '권)') if missing else ''}
+    return coverage(files, publication_status)
 
 
 def _series_dates_key(library_id, series_name):
@@ -7165,6 +7182,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 'is_standalone': is_standalone,
                 'publication_coverage': _chapter_file_coverage(files, stored_dates.get('total_chapters')),
                 'publication_volume_coverage': volume_coverage,
+                'holdings_coverage': _detail_holdings_coverage(files, publication_status),
                 'manual_chapter_count': stored_dates.get('manual_chapter_count'),
                 'manual_empty_fields': stored_dates.get('manual_empty_fields') or [],
                 'support_summary_html': support_summary_html, 'exclude_tags': exclude_tags,
