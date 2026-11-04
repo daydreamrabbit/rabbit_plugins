@@ -284,6 +284,24 @@ for(const x of [-100,-50,0,50,100]) {
 const third={id:'0',x:0,y:0,labelWidth:112,boxHeight:104},sideAbove={id:'2',x:50,y:-140,labelWidth:112,boxHeight:104},currentBelow={id:'current',x:50,y:140,current:true};
 const thirdCaption=context.relationGraphCaptionPosition(third,[sideAbove,currentBelow]);
 assert.ok(thirdCaption.x<0 && !thirdCaption.above,'third-chapter caption chooses the free side when both upper and lower connections exist');
+for(const width of [320,480,760])for(const side of [-98,98]) {
+  const previous={x:side,above:false,top:32,bottom:94};
+  const moved={id:'main',x:width/4,y:0,labelWidth:112,boxHeight:104,captionRecipe:previous};
+  const current={id:'current',current:true,x:-width/4,y:0,labelWidth:112,boxHeight:120};
+  const returned=context.relationGraphUpdateCaption(moved,[current],{width},true);
+  assert.equal(returned.x,0,'moving a two-work graph clear returns a displaced title to its cover at width '+width);
+  assert.equal(returned.above,false,'an unobstructed lower caption is preferred');
+  const second={...current,id:'other',y:-180};
+  assert.equal(context.relationGraphCaptionPosition(moved,[current,second],{width}).x,0,
+    'multiple connections also release a sideways caption when the centred slot becomes clear');
+  moved.captionRecipe=returned;
+  assert.equal(context.relationGraphUpdateCaption(moved,[current],{width}),returned,'the restored title remains stable after release');
+  for(const [x,y] of [[0,-60],[40,-20],[-40,20],[0,60]]) {
+    const nearby={...current,x:moved.x+x,y:moved.y+y};
+    assert.equal(context.relationGraphCaptionPosition({...moved,captionRecipe:previous},[nearby],{width}).x,0,
+      'a single connected work keeps its title above or below the cover even at close angles');
+  }
+}
 third.captionOffset=thirdCaption.x;
 const thirdCable=context.relationGraphCurve(third,sideAbove,null,{kind:'main_story',adjacency:{'0':['2','current'],'2':['0']}});
 for(let i=0;i<=40;i++) {

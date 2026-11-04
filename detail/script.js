@@ -2474,7 +2474,7 @@
   function relationGraphCaptionPosition(n,neighbours,limits) {
     const half=(n.labelWidth||112)/2;
     const slots=[{x:0,above:false,top:32,bottom:94},{x:0,above:true,top:-96,bottom:-40},
-      ...(n.groupId?[]:[{x:-half-42,above:false,top:32,bottom:94},{x:half+42,above:false,top:32,bottom:94}])];
+      ...(n.groupId || neighbours.length<2?[]:[{x:-half-42,above:false,top:32,bottom:94},{x:half+42,above:false,top:32,bottom:94}])];
     let best=slots[0],score=Infinity;
     slots.forEach((slot,index)=>{
       let hits=0;
@@ -2492,7 +2492,10 @@
       }
       const overflow=limits?Math.max(0,-limits.width/2+8-(n.x+slot.x-half))+Math.max(0,n.x+slot.x+half-(limits.width/2-8)):0;
       const changed=n.captionRecipe && (n.captionRecipe.above!==slot.above || n.captionRecipe.x!==slot.x);
-      const cost=hits*100+(n.current?0:occupied*300)+overflow*100+index+(changed?25:0);
+      // A sideways caption is only a fallback while both centred slots are
+      // obstructed. Do not let hysteresis keep it detached after moving clear.
+      const returningToCover=n.captionRecipe?.x && slot.x===0;
+      const cost=hits*100+(n.current?0:occupied*300)+overflow*100+index+(changed && !returningToCover?25:0);
       if(cost<score){score=cost;best=slot;}
     });
     return best;
