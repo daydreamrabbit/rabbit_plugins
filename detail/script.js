@@ -1983,6 +1983,19 @@
     return { height, labelWidth, positions };
   }
 
+  function relationGraphRecommendationLayout(count,width) {
+    const labelWidth=Math.min(112,Math.max(84,width-24));
+    const columns=Math.max(1,Math.floor((width-24)/(labelWidth+24)));
+    const rows=Math.ceil((count-1)/columns),centre=Math.floor(rows/2),pitch=156;
+    const height=(rows+1)*pitch+24,y=row=>(row-rows/2)*pitch-20;
+    const positions=[[0,y(centre)]];
+    for(let i=0;i<count-1;i++) {
+      const row=Math.floor(i/columns),size=Math.min(columns,count-1-row*columns);
+      positions.push([(i%columns-(size-1)/2)*(labelWidth+24),y(row>=centre?row+1:row)]);
+    }
+    return {positions,height,labelWidth};
+  }
+
   function relationGraphBranchLayout(nodes,width,edges,stacked=false) {
     const fallback=relationGraphLayout(nodes.length,width);
     if(nodes.length<2 || nodes.length>5)return fallback;
@@ -2265,8 +2278,25 @@
     return links;
   }
 
-  function relationGraphNodeRelations(n,links) {
-    return [...new Set(links.filter(link=>link.target===n.id && link.kind && link.label && link.label!==n.kind).map(link=>link.label))];
+  function relationGraphNodeRelations(n,links,nodes=null) {
+    return [...new Set(links.filter(link=>link.target===n.id && link.kind && link.label && link.label!==n.kind
+      && (!nodes || n.groupId && nodes.find(peer=>peer.id===link.source)?.groupId===n.groupId)).map(link=>link.label))];
+  }
+
+  function relationGraphPeerDescriptions(n,links,nodes) {
+    return [...new Set(links.filter(link=>link.target===n.id && link.kind && link.label && link.label!==n.kind).map(link=>{
+      const source=nodes.find(peer=>peer.id===link.source);
+      return source?source.label+' 기준: '+link.label:'';
+    }).filter(Boolean))];
+  }
+
+  function relationGraphRecommendationSample(items,random=Math.random) {
+    const seen=new Set(),books=(Array.isArray(items)?items:[]).filter(book=>{
+      const key=String(book.library_id)+':'+String(book.series_name||book.book_id);
+      if(seen.has(key))return false;seen.add(key);return true;
+    });
+    for(let i=books.length-1;i>0;i--){const j=Math.floor(random()*(i+1));[books[i],books[j]]=[books[j],books[i]];}
+    return books.slice(0,10);
   }
 
   function relationGraphDrift(id,time) {
@@ -2293,6 +2323,16 @@
       // keep accelerating toward the rejected target on subsequent frames.
       spring[target]=spring.n[axis];spring[velocity]=0;
     }
+  }
+
+  function relationGraphSetDragTarget(drag,target) {
+    // Many pointer positions outside one corner project to the same target.
+    // Reapplying it overrides contact reconciliation and kicks the neighbours
+    // again. Retain the reachable target until the projected input changes.
+    if(Number.isFinite(drag.requestedTargetX) && Math.hypot(target.x-drag.requestedTargetX,target.y-drag.requestedTargetY)<.05)return false;
+    drag.requestedTargetX=target.x;drag.requestedTargetY=target.y;
+    drag.targetX=target.x;drag.targetY=target.y;
+    return true;
   }
 
   function relationGraphReleaseSpring(drag) {
@@ -2322,9 +2362,10 @@
       n.x+=spring.vx;n.y+=spring.vy;
     }
     if(limits) {
-      const x=Math.max(-limits.width/2+n.labelWidth/2+8,Math.min(limits.width/2-n.labelWidth/2-8,n.x));
-      const y=Math.max(-limits.height/2+36,Math.min(limits.height/2-84,n.y));
-      if(x!==n.x)spring.vx=0;if(y!==n.y)spring.vy=0;n.x=x;n.y=y;
+      const before={x:n.x,y:n.y};
+      relationGraphFitDragNode(n,limits);
+      if(n.x!==before.x){spring.vx=0;spring.targetX=n.x;}
+      if(n.y!==before.y){spring.vy=0;spring.targetY=n.y;}
     }
     n.fx=n.x;n.fy=n.y;
     const resting=Math.hypot(n.x-spring.targetX,n.y-spring.targetY)<.12 && Math.hypot(spring.vx,spring.vy)<.12;
@@ -2437,7 +2478,7 @@
         let blocked=0;
         const ownLabel=a.captionAbove?{x:a.x,y:a.y+(a.captionTop||-96)+32,labelWidth:a.labelWidth||112,boxHeight:Math.max(1,-48-(a.captionTop||-96))}
           :{x:a.x+(a.captionOffset||0),y:a.y+64,labelWidth:a.labelWidth||112,boxHeight:Math.max(1,(a.boxHeight||104)-64)};
-        const obstacles=[...(link.obstacles||[]),ownLabel];
+        const obstacles=[...(link.obstacles||[]),...(a.current?[]:[ownLabel])];
         for(const n of obstacles)for(let k=1;k<20;k++) {
           const v=samples[k-1];
           if(v.x>n.x-n.labelWidth/2-6 && v.x<n.x+n.labelWidth/2+6 && v.y>n.y-32 && v.y<n.y-24+n.boxHeight+6){blocked++;break;}
@@ -2473,14 +2514,20 @@
 
   function relationGraphCaptionPosition(n,neighbours,limits) {
     const half=(n.labelWidth||112)/2;
-    const slots=[{x:0,above:false,top:32,bottom:94},{x:0,above:true,top:-96,bottom:-40},
-      ...(n.groupId || neighbours.length<2?[]:[{x:-half-42,above:false,top:32,bottom:94},{x:half+42,above:false,top:32,bottom:94}])];
-    let best=slots[0],score=Infinity;
+    const m=n.captionMetrics,centre=n.current?30:24;
+    const below={top:m?m.titleTop-centre:32,bottom:m?m.kindTop+m.kindHeight-centre:94};
+    const above={top:m?-44-m.titleHeight-m.kindHeight:-96,bottom:-40};
+    // Captions belong to their cover. Only actual text/cover collisions and
+    // viewport edges may choose its upper or lower slot; cables route around it.
+    const slots=[{x:0,above:false,...below},{x:0,above:true,...above}];
+    let best=slots[0],score=Infinity,retained=null;
     slots.forEach((slot,index)=>{
-      let hits=0;
-      for(const p of neighbours)for(let i=1;i<40;i++) {
+      // On first layout pick the side away from attached cables. Once chosen,
+      // changing cable angles must never relocate the caption during a drag.
+      let initialCrossings=0;
+      if(!n.captionRecipe)for(const p of limits?.captionPeers||neighbours)for(let i=1;i<40;i++) {
         const x=(p.x-n.x)*i/40,y=(p.y-n.y)*i/40;
-        if(x>slot.x-half-6 && x<slot.x+half+6 && y>slot.top-5 && y<slot.bottom+5){hits+=p.group?3:1;break;}
+        if(x>-half-6 && x<half+6 && y>slot.top-5 && y<slot.bottom+5){initialCrossings++;break;}
       }
       let occupied=0;
       for(const p of neighbours) {
@@ -2490,21 +2537,26 @@
         if(slot.x-half<px+(p.labelWidth||112)/2 && slot.x+half>px-(p.labelWidth||112)/2 && slot.top<bottom && slot.bottom>top)occupied++;
         if(slot.x-half<px+30 && slot.x+half>px-30 && slot.top<py+30 && slot.bottom>py-30)occupied++;
       }
-      const overflow=limits?Math.max(0,-limits.width/2+8-(n.x+slot.x-half))+Math.max(0,n.x+slot.x+half-(limits.width/2-8)):0;
+      const edgeY=limits?.requestedY??n.y;
+      const vertical=limits?.height?Math.max(0,-limits.height/2+12-(edgeY+slot.top))+Math.max(0,edgeY+slot.bottom-(limits.height/2-12)):0;
+      const overflow=(limits?Math.max(0,-limits.width/2+8-(n.x+slot.x-half))+Math.max(0,n.x+slot.x+half-(limits.width/2-8)):0)+vertical;
       const changed=n.captionRecipe && (n.captionRecipe.above!==slot.above || n.captionRecipe.x!==slot.x);
-      // A sideways caption is only a fallback while both centred slots are
-      // obstructed. Do not let hysteresis keep it detached after moving clear.
+      // Discard offsets from older layouts immediately.
       const returningToCover=n.captionRecipe?.x && slot.x===0;
-      const cost=hits*100+(n.current?0:occupied*300)+overflow*100+index+(changed && !returningToCover?25:0);
+      const cost=initialCrossings*100+(n.current?0:occupied*300)+overflow*100+index+(changed && !returningToCover?25:0);
+      // Keep an accepted centred caption while its actual space is clear.
+      // A centre-to-centre ray changing direction is not a text collision.
+      if(n.captionRecipe && !changed && slot.x===0 && !occupied && !overflow)retained=slot;
       if(cost<score){score=cost;best=slot;}
     });
-    return best;
+    return retained||best;
   }
 
   function relationGraphUpdateCaption(n,neighbours,limits,dragging=false) {
+    if(n.current)return {x:0,above:false,top:38,bottom:68};
     // Idle drift must not move a title to the opposite side and resize its body.
     // Choose while interacting (or fitting a new viewport), then retain it.
-    return n.captionRecipe && !dragging?n.captionRecipe:relationGraphCaptionPosition(n,neighbours,limits);
+    return n.captionRecipe && !n.captionRecipe.x && !dragging?n.captionRecipe:relationGraphCaptionPosition(n,neighbours,limits);
   }
 
   function relationGraphBookCable(a,b,link,group) {
@@ -2521,11 +2573,15 @@
       :Math.max(progress*progress*(3-2*progress),titleClearance);
     const relevant=(link.obstacles||[]).filter(n=>n.x>=Math.min(a.x,b.x)-120 && n.x<=Math.max(a.x,b.x)+120 && n.y>=Math.min(a.y,b.y)-120 && n.y<=Math.max(a.y,b.y)+120);
     const geometry=[a,b,...relevant];
-    const unchanged=state.routingGeometry?.length===geometry.length && geometry.every((p,i)=>Math.hypot(p.x-state.routingGeometry[i].x,p.y-state.routingGeometry[i].y)<6);
+    const unchanged=state.routingGeometry?.length===geometry.length && geometry.every((p,i)=>{
+      const old=state.routingGeometry[i];
+      return Math.hypot(p.x-old.x,p.y-old.y)<6 && Boolean(p.captionAbove)===old.captionAbove
+        && (p.captionTop||0)===old.captionTop && (p.labelWidth||0)===old.labelWidth && (p.boxHeight||0)===old.boxHeight;
+    });
     const cached=unchanged && state.sourcePort!==undefined && state.targetPort!==undefined;
     const labelBox=n=>n.captionAbove?{x:n.x,y:n.y+(n.captionTop||-96)+32,labelWidth:n.labelWidth||112,boxHeight:Math.max(1,-40-(n.captionTop||-96)-8)}
       :{x:n.x+(n.captionOffset||0),y:n.y+64,labelWidth:n.labelWidth||112,boxHeight:Math.max(1,(n.boxHeight||104)-64)};
-    const obstacles=[...(link.obstacles||[]),labelBox(a),labelBox(b)];
+    const obstacles=[...(link.obstacles||[]),...[a,b].filter(n=>!n.current).map(labelBox)];
     const sx=a.x+dx/distance*ra,sy=a.y+dy/distance*ra,ex=b.x-dx/distance*rb,ey=b.y-dy/distance*rb;
     // A shallow arc softens the cable without retaining large bends at close range.
     if(state.bowSign===undefined)state.bowSign=a.current && dx>Math.abs(dy)*.3?-1:1;
@@ -2653,7 +2709,8 @@
     state.targetAngle=angle(state.targetAngle,Math.atan2(selected.q.y,selected.q.x),-dx/distance,-dy/distance);
     state.sourcePort=selected.i;state.targetPort=selected.j;
     state.routeBend=selected.bend;
-    if(!cached)state.routingGeometry=geometry.map(p=>({x:p.x,y:p.y}));
+    if(!cached)state.routingGeometry=geometry.map(p=>({x:p.x,y:p.y,captionAbove:Boolean(p.captionAbove),
+      captionTop:p.captionTop||0,labelWidth:p.labelWidth||0,boxHeight:p.boxHeight||0}));
     return make({x:Math.cos(state.sourceAngle),y:Math.sin(state.sourceAngle)},{x:Math.cos(state.targetAngle),y:Math.sin(state.targetAngle)},state.routeBend);
   }
 
@@ -2835,6 +2892,18 @@
     }
     return contact;
   }
+  function relationGraphFitNode(n,limits) {
+    const {outline}=relationGraphBodyBounds('node:'+n.id,[n]);
+    const shift=(low,high,size)=>high-low<=size-24?Math.max(0,-size/2+12-low)-Math.max(0,high-size/2+12):0;
+    n.x+=shift(Math.min(...outline.map(p=>p.x)),Math.max(...outline.map(p=>p.x)),limits.width);
+    n.y+=shift(Math.min(...outline.map(p=>p.y)),Math.max(...outline.map(p=>p.y)),limits.height);
+  }
+  function relationGraphFitDragNode(n,limits) {
+    // A grouped book must use the same membrane/heading clearance as the
+    // held member in the collision solver, including at both corner axes.
+    if(n.groupId)relationGraphFitBody([n],n,limits);
+    else relationGraphFitNode(n,limits);
+  }
   function relationGraphGroupBounds(base, members, neighbours = [],geometryOnly=false,requiredMembers=members) {
     const oval = (x,y,rx,ry) => relationGraphCircle.map(p=>({x:x+p.x*rx,y:y+p.y*ry}));
     const envelopeMembers=requiredMembers===members?members:[...members,...requiredMembers];
@@ -2980,7 +3049,9 @@
       const overlap=Math.min(amax,bmax)-Math.max(amin,bmin)+clearance;
       if(overlap<=0)return 0;
       depth=Math.min(depth,overlap);
-      if(withDirection){const positive=bmax-amin+clearance+4,negative=amax-bmin+clearance+4,distance=positive<negative?positive:-negative;
+      // Match the correction to the measured penetration. An extra fixed kick
+      // at almost-zero contact fights wall/spring constraints and chatters.
+      if(withDirection){const positive=bmax-amin+clearance,negative=amax-bmin+clearance,distance=positive<negative?positive:-negative;
         if(!separation || Math.abs(distance)<separation.depth)separation={nx:nx*Math.sign(distance),ny:ny*Math.sign(distance),depth:Math.abs(distance)};}
     }
     return withDirection?separation:depth;
@@ -3066,11 +3137,9 @@
         for(const n of a.members){let weight=Math.exp(-Math.hypot(n.x-contact.x,n.y+n.boxHeight/2-24-contact.y)/110);if(heldB)weight=.5+weight*.5;move(n,nx*amount*weight,ny*amount*weight);}
         for(const n of b.members){let weight=Math.exp(-Math.hypot(n.x-contact.x,n.y+n.boxHeight/2-24-contact.y)/110);if(heldA)weight=.5+weight*.5;move(n,-nx*amount*weight,-ny*amount*weight);}
       }
-      for(const n of particles) {
-        if(n===held)continue;
-        n.x=Math.max(-limits.width/2+n.labelWidth/2+10,Math.min(limits.width/2-n.labelWidth/2-10,n.x));
-        n.y=Math.max(-limits.height/2+(n.captionAbove?110:42),Math.min(limits.height/2-n.boxHeight+24,n.y));
-      }
+      // Use the same visible bounds for drag and collision corrections. A
+      // second, different clamp in the painter would undo this every frame.
+      for(const n of particles)if(!n.groupId)relationGraphFitNode(n,limits);
       // A compact viewport must constrain the whole membrane, including its
       // heading, rather than only the individual covers inside it.
       for(const [id,members] of bodies) {
@@ -3121,7 +3190,9 @@
     relationGraph?.destroy();
     const stage = $('[data-relation-graph-stage]'), status = $('[data-relation-graph-status]');
     stage.replaceChildren(); status.hidden = true;
-    section.hidden = !works.length || !relationGraphVisible(relationGraphSettings,relationGraphMobile.matches);
+    const displaySettings=relationGraphSettings && {...relationGraphSettings,enabled:graphData.recommendations?relationGraphSettings.recommendationsEnabled:relationGraphSettings.enabled};
+    section.querySelector('h2').textContent=graphData.recommendations?'추천 관계도':'관계도';
+    section.hidden = !works.length || !relationGraphVisible(displaySettings,relationGraphMobile.matches);
     if (section.hidden) { relationGraph = null; return; }
     const topology = relationGraphTopology(works, graphData, detailTitle());
     const nodes = [{ id: 'current', label: detailTitle(), kind: '현재 작품',relationType:works.some(work=>work.type==='original')?'adaptation':undefined,
@@ -3153,7 +3224,7 @@
     let lastTheme = 0;
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const links = relationGraphLinks(nodes, topology);
-    for(const n of nodes)n.extraRelations=relationGraphNodeRelations(n,links);
+    for(const n of nodes){n.extraRelations=relationGraphNodeRelations(n,links,nodes);n.peerDescriptions=relationGraphPeerDescriptions(n,links,nodes);}
     const adjacency={};
     for(const l of links)for(const [a,b] of [[l.source,l.target],[l.target,l.source]]) {
       if(!adjacency[a])adjacency[a]=[];if(!adjacency[a].includes(b))adjacency[a].push(b);
@@ -3190,6 +3261,7 @@
       if (cover) { image.src = cover; image.alt = ''; preview.append(image); }
       const info = node('div', 'ds-relation-preview-info');
       info.append(node('span', 'ds-relation-preview-kind', n.kind), node('strong', '', n.label));
+      for(const description of n.peerDescriptions)info.append(node('span','ds-relation-preview-series',description));
       if (n.groupId) info.append(node('span', 'ds-relation-preview-series', nodes.find(item => item.id === n.groupId).label + (n.step ? ' · ' + n.step + '번째' : '')));
       info.append(node('small', '', n.current ? '현재 보고 있는 작품' : '클릭하여 작품 상세 보기'));
       preview.append(info); preview.hidden = false;
@@ -3220,7 +3292,8 @@
       availableWidth=nextWidth;
       const viewport=relationGraphViewport(availableWidth,works.length+1,topology.groups.length>0);
       width=viewport.width;displayScale=viewport.scale;
-      layout = topology.groups.length ? relationGraphGroupedLayout(nodes, width, topology.groups) : relationGraphBranchLayout(nodes,width,topology.extraEdges);
+      layout = graphData.recommendations?relationGraphRecommendationLayout(nodes.length,width)
+        :topology.groups.length ? relationGraphGroupedLayout(nodes, width, topology.groups) : relationGraphBranchLayout(nodes,width,topology.extraEdges);
       height = layout.height+(topology.groups.length || nodes.length>5?72:24);
       stage.style.height = height*displayScale + 'px';
       stage.dataset.scale=String(displayScale);
@@ -3240,6 +3313,7 @@
           n.captionMetrics={titleHeight:n.titleElement.offsetHeight,kindHeight:n.kindElement.offsetHeight,kindWidth:n.kindElement.offsetWidth,titleTop:n.titleElement.offsetTop,kindTop:n.kindElement.offsetTop};
           n.captionPlacement=null;
           n.captionRecipe=null;
+          n.captionAbove=false;n.captionOffset=0;n.captionTop=32;
         }
         if (n.group) {
           const box = layout.groupBoxes.get(n.id); n.groupWidth = box.width; n.groupHeight = box.height;
@@ -3280,14 +3354,25 @@
         }
       }
     }
-    function paintNodes() {
+    function updateCaptions(interactive=false) {
       for(const n of nodes.filter(n=>!n.group)) {
-        if(!drag?.moved && n.captionRecipe)continue;
-        const caption=relationGraphUpdateCaption(shown(n),nodes.filter(peer=>(adjacency[n.id]||[]).includes(peer.id)).map(shown),{width},Boolean(drag?.moved));
+        if(!interactive && n.captionRecipe)continue;
+        // Use the requested cover position for edge clearance before the old
+        // caption clamps the book short of the edge and masks the overflow.
+        const radius=(n.current?30:24)+12;
+        const requestedY=drag?.n===n && Number.isFinite(drag.requestedY)
+          ?Math.max(-height/2+radius,Math.min(height/2-radius,drag.requestedY)):undefined;
+        const neighbours=nodes.filter(peer=>peer.id!==n.id && !peer.group).map(shown);
+        const captionPeers=nodes.filter(peer=>(adjacency[n.id]||[]).includes(peer.id)).map(shown);
+        const caption=relationGraphUpdateCaption(shown(n),neighbours,
+          {width,height:interactive?height:undefined,requestedY,captionPeers},interactive);
         n.captionRecipe=caption;
         n.captionAbove=caption.above;n.captionOffset=caption.x;
-        if(caption.above)n.captionTop=-44-n.captionMetrics.titleHeight-n.captionMetrics.kindHeight;
+        n.captionTop=caption.above?-44-n.captionMetrics.titleHeight-n.captionMetrics.kindHeight:32;
       }
+    }
+    function paintNodes() {
+      updateCaptions();
       for(const group of nodes.filter(n=>n.group)) {
         const members=nodes.filter(n=>n.groupId===group.id).map(shown);
         if(!group.smoothedMembers)group.smoothedMembers=members.map(n=>({...n,vx:0,vy:0}));
@@ -3335,12 +3420,6 @@
           }
           n.element.dataset.captionPosition=n.captionAbove?'above':'below';
           n.captionPlacement=placement;
-          }
-          if(!n.groupId) {
-            const low=-height/2-(n.captionAbove?n.captionTop:-36)+12;
-            const high=height/2-(n.captionAbove?36:n.boxHeight-centre)-12;
-            const y=Math.max(low,Math.min(high,target.y));
-            n.y+=y-target.y;n.fy=n.y;target.y=y;
           }
         }
         const p = graph ? graph.graph2ScreenCoords(target.x, target.y) : { x: target.x + width / 2, y: target.y + height / 2 };
@@ -3401,10 +3480,11 @@
         const img = document.createElement('img'); img.src = cover; img.alt = ''; img.draggable = false;
         img.addEventListener('error', () => art.replaceChildren(node('span', '', '표지 없음')), { once: true }); art.append(img);
       } else art.append(node('span', '', '표지 없음'));
-      n.titleElement=node('span','ds-relation-node-title',n.shortLabel||n.label);
+      n.titleElement=node('span','ds-relation-node-title',n.current?'':n.shortLabel||n.label);
+      if(n.current)n.titleElement.style.display='none';
       n.kindElement=node('span','ds-relation-node-kind',n.kind);
       const extraRelations=n.extraRelations;
-      if(extraRelations.length) {
+      if(extraRelations.length && !n.current) {
         n.kindElement.replaceChildren(node('span','',n.kind),node('span','ds-relation-node-relations',extraRelations.join(' · ')));
         button.setAttribute('aria-label',button.getAttribute('aria-label')+' · '+extraRelations.join(' · '));
       }
@@ -3424,7 +3504,7 @@
         releasedSpring=null;
         settleAnchor=null;
         suppressClick = false; drag = { n, id: event.pointerId, x: event.clientX, y: event.clientY, moved: false,
-          targetX:n.x,targetY:n.y,offsetX:n.x-point.x,offsetY:n.y-point.y,vx:0,vy:0 };
+          targetX:n.x,targetY:n.y,requestedY:n.y,offsetX:n.x-point.x,offsetY:n.y-point.y,vx:0,vy:0 };
         n.fx = n.x; n.fy = n.y; button.setPointerCapture(event.pointerId);
       });
       button.addEventListener('pointermove', event => {
@@ -3434,10 +3514,14 @@
         event.preventDefault(); button.classList.add('is-dragging');
         const rect = stage.getBoundingClientRect();
         const point = graph.screen2GraphCoords((event.clientX - rect.left)/displayScale,(event.clientY - rect.top)/displayScale);
-        drag.targetX=Math.max(-width/2+n.labelWidth/2+8,Math.min(width/2-n.labelWidth/2-8,point.x+drag.offsetX));
-        drag.targetY=Math.max(-height/2+(n.captionAbove?104:36),Math.min(height/2-84,point.y+drag.offsetY));
-        wakeSoftBody();
-        graph.d3ReheatSimulation();
+        drag.requestedY=point.y+drag.offsetY;
+        updateCaptions(true);
+        const target={...n,x:point.x+drag.offsetX,y:point.y+drag.offsetY};
+        relationGraphFitDragNode(target,{width,height});
+        if(relationGraphSetDragTarget(drag,target)) {
+          wakeSoftBody();
+          graph.d3ReheatSimulation();
+        }
       });
       for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) button.addEventListener(name, endDrag);
       button.addEventListener('click', event => {
@@ -3562,6 +3646,7 @@
           edgeFrame++;
           const spring=drag?.moved?drag:releasedSpring;
           if(spring && relationGraphDragSpring(spring.n,spring,reducedMotion,{width,height}) && spring===releasedSpring)releasedSpring=null;
+          if(drag?.moved)updateCaptions(true);
           if(drag?.moved || settleFrames>0) {
             const heldBefore=spring?{x:spring.n.x,y:spring.n.y}:null;
             const movement=relationGraphSoftStep(nodes.filter(n=>!n.group),softLinks,drag?.n||releasedSpring?.n||settleAnchor,{width,height});
@@ -3625,9 +3710,11 @@
   function renderRecommendations(items) {
     const section = $('[data-recommendation-section]');
     const target = $('[data-recommendations]');
-    const books = Array.isArray(items) ? items : [];
+    const books = relationGraphRecommendationSample(items);
     target.replaceChildren(...books.map((book, index) => bookCard(book, index, true)));
     section.hidden = books.length === 0;
+    if(!relationGraphInput?.works.length || relationGraphInput.graphData.recommendations)
+      renderRelationGraph(books.map(book=>({book,label:'추천',type:'recommendation'})),{recommendations:true});
   }
 
   function renderLibraryPath() {
@@ -4088,8 +4175,8 @@
       const data = preparedData || await request(apiUrl('files'));
       if (!root.isConnected || sequence !== detailDataSequence) return;
       summaryHtmlEnabled = data.support_summary_html === true;
-      const graphSettings={enabled:data.relation_graph_enabled!==false,mobileEnabled:data.relation_graph_mobile_enabled!==false};
-      const graphSettingsChanged=!relationGraphSettings || graphSettings.enabled!==relationGraphSettings.enabled || graphSettings.mobileEnabled!==relationGraphSettings.mobileEnabled;
+      const graphSettings={enabled:data.relation_graph_enabled!==false,mobileEnabled:data.relation_graph_mobile_enabled!==false,recommendationsEnabled:data.recommendation_graph_enabled!==false};
+      const graphSettingsChanged=!relationGraphSettings || graphSettings.enabled!==relationGraphSettings.enabled || graphSettings.mobileEnabled!==relationGraphSettings.mobileEnabled || graphSettings.recommendationsEnabled!==relationGraphSettings.recommendationsEnabled;
       relationGraphSettings=graphSettings;
       if(graphSettingsChanged)refreshRelationGraphDisplay();
       excludedGenres = excludedTerms(data.exclude_genres);

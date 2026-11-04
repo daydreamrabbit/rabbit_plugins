@@ -495,6 +495,7 @@
 .ds-relation-node:is(:hover, :focus-visible) .ds-relation-node-art { transform: scale(1.14); box-shadow: 0 0 0 5px color-mix(in srgb, var(--graph-tone) 28%, transparent), 0 5px 18px color-mix(in srgb, var(--graph-tone) 26%, transparent); }
 .ds-relation-node-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; width: 100%; margin-top: 8px; font-size: 11px; overflow-wrap: anywhere; }
 .ds-relation-node-kind { display: block; margin-top: 3px; color: var(--ds-muted); font-size: 11px; }
+.ds-relation-node[data-current="true"] .ds-relation-node-kind { margin-top: 8px; padding: 3px 8px; border: 1px solid color-mix(in srgb, var(--graph-tone) 55%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--ds-panel) 85%, transparent); color: var(--ds-text); }
 .ds-relation-node-kind:has(.ds-relation-node-relations) { display: flex; flex-direction: column; gap: 3px; }
 .ds-relation-node[data-caption-position="above"] .ds-relation-node-kind { flex-direction: column-reverse; }
 .ds-relation-node-relations { color: var(--graph-tone); font-weight: 600; }

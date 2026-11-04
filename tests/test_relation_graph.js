@@ -16,6 +16,26 @@ const topology = source.slice(source.indexOf('  function relationGraphTopology('
 const context = { relationLabels: { prequel: '전작', sequel: '후속작', side_story: '외전', spin_off: '스핀오프', main_story: '본편' } };
 const viewportSource=source.slice(source.indexOf('  function relationGraphViewport('),source.indexOf('  function loadRelationGraphEngine('));
 vm.createContext(context); vm.runInContext(layout + topology, context);
+for(const width of [240,320,600,1000]) {
+  const rec=context.relationGraphRecommendationLayout(11,width),boxes=[];
+  rec.positions.forEach(([x,y],i)=>{
+    const b={left:x-rec.labelWidth/2,right:x+rec.labelWidth/2,top:y-30,bottom:y+(i?100:68)};
+    assert.ok(!boxes.some(p=>b.left<p.right && b.right>p.left && b.top<p.bottom && b.bottom>p.top),'recommendation cover/title envelopes do not overlap at width '+width);
+    boxes.push(b);
+  });
+}
+assert.equal(context.relationGraphUpdateCaption({current:true,captionRecipe:{above:true,x:98}},[],{width:300,height:300},true).above,false,'current badge always stays below the cover');
+{
+  const nodes=[{id:'2',kind:'전작',label:'제2장'},{id:'4',kind:'후속작',label:'제4장'},{id:'side',label:'검귀연가'}];
+  const links=[{source:'side',target:'2',kind:'main_story',label:'본편'},{source:'side',target:'4',kind:'main_story',label:'본편'}];
+  assert.equal(context.relationGraphNodeRelations(nodes[0],links,nodes).length,0,'ordinary captions only describe the focused work relationship');
+  assert.equal(context.relationGraphPeerDescriptions(nodes[0],links,nodes)[0],'검귀연가 기준: 본편','peer roles retain their actual source context in the preview');
+  const books=Array.from({length:30},(_,i)=>({library_id:1,series_name:String(i)}));
+  const sample=context.relationGraphRecommendationSample([...books,books[0]],()=>0);
+  assert.equal(sample.length,10);assert.equal(new Set(sample.map(b=>b.series_name)).size,10);
+  assert.equal(books[0].series_name,'0','sampling does not mutate response order');
+  assert.equal(context.relationGraphRecommendationSample([]).length,0);
+}
 assert.equal(context.relationGraphNodeRelations({id:'manga',kind:'각색'},[
   {target:'manga',kind:'main_story',label:'본편',showLabel:false},
   {target:'manga',kind:'main_story',label:'본편'},
@@ -235,11 +255,21 @@ const softNode=(id,x,y,groupId)=>({id,x,y,groupId,labelWidth:80,boxHeight:96});
     const neighbours=[{...pair[1],x:dx}];
     assert.equal(context.relationGraphUpdateCaption(upper,neighbours,{width:1600}),recipe,'idle floating cannot flip an accepted title or enlarge the membrane');
   }
-  assert.equal(context.relationGraphUpdateCaption(upper,[pair[1]],{width:1600},true).above,true,'a new drag may move the caption above the downward connection');
+  assert.equal(context.relationGraphUpdateCaption(upper,[pair[1]],{width:1600},true).above,false,'a new drag retains a clear accepted caption despite a downward connection');
+  assert.equal(context.relationGraphUpdateCaption(upper,[{...pair[1],x:upper.x,y:upper.y+60}],{width:1600},true).above,true,
+    'a cover actually occupying the caption still moves it to the free side');
 }
 const branches=[{id:'current',current:true},{id:'0',relationType:'sequel'},{id:'1',relationType:'prequel'},{id:'2',relationType:'side_story'}];
 const branchEdges=[{source:'0',target:'2'}];
 const collisionMember={id:'only',x:0,y:0,labelWidth:80,boxHeight:104};
+{
+  const left=[{x:0,y:0},{x:100,y:0},{x:100,y:100},{x:0,y:100}];
+  for(const penetration of [.1,.01,.001]) {
+    const right=left.map(p=>({x:p.x+102-penetration,y:p.y}));
+    const contact=context.relationGraphOverlap(left,right,true,2);
+    assert.ok(contact && Math.abs(contact.depth-penetration)<1e-9,'contact correction fades with penetration instead of retaining a fixed kick near the wall');
+  }
+}
 const visibleBody=context.relationGraphBodyBounds('node:only',[collisionMember]);
 assert.equal(visibleBody.parts.length,2,'ordinary cover and displaced text have separate collision parts');
 for(const above of [false,true]) {
@@ -283,7 +313,32 @@ for(const x of [-100,-50,0,50,100]) {
 }
 const third={id:'0',x:0,y:0,labelWidth:112,boxHeight:104},sideAbove={id:'2',x:50,y:-140,labelWidth:112,boxHeight:104},currentBelow={id:'current',x:50,y:140,current:true};
 const thirdCaption=context.relationGraphCaptionPosition(third,[sideAbove,currentBelow]);
-assert.ok(thirdCaption.x<0 && !thirdCaption.above,'third-chapter caption chooses the free side when both upper and lower connections exist');
+assert.equal(thirdCaption.x,0,'third-chapter caption stays centred despite upper and lower connections');
+for(const above of [false,true])for(let i=0;i<24;i++) {
+  const recipe={x:0,above,top:above?-96:32,bottom:above?-40:94};
+  const work={id:'book',x:0,y:0,labelWidth:112,captionRecipe:recipe};
+  const neighbours=Array.from({length:5},(_,j)=>({id:String(j),x:360*Math.cos(i+j),y:360*Math.sin(i+j),labelWidth:112}));
+  const caption=context.relationGraphUpdateCaption(work,neighbours,{width:1000,height:1000},true);
+  assert.equal(caption.x,0,'relationship and recommendation captions never move beside their covers');
+  assert.equal(caption.above,above,'changing cable directions cannot move an unobstructed caption');
+}
+for(const above of [false,true])for(const dy of [-220,-120,120,220]) {
+  const recipe={x:0,above,top:above?-96:32,bottom:above?-40:94};
+  const dragged={id:'dazai',groupId:'pair',x:0,y:0,labelWidth:112,boxHeight:124,captionRecipe:recipe};
+  const storm={id:'storm',x:160,y:dy,labelWidth:112,boxHeight:124};
+  assert.equal(context.relationGraphUpdateCaption(dragged,[storm],{width:1000},true).above,above,
+    'moving Dazai above or below STORMBRINGER does not flip a caption whose actual space is clear');
+}
+{
+  const n={id:'dazai',groupId:'pair',x:0,y:80,labelWidth:112,boxHeight:124,
+    captionRecipe:{x:0,above:false,top:32,bottom:94}};
+  const bottom=context.relationGraphUpdateCaption(n,[],{width:600,height:400,requestedY:164},true);
+  assert.equal(bottom.above,true,'a bottom-edge pointer moves the caption up before its old lower caption clamps the book short of the edge');
+  n.captionRecipe=bottom;
+  assert.equal(context.relationGraphUpdateCaption(n,[],{width:600,height:400,requestedY:164},true).above,true,'continued bottom pressure keeps the upper caption stable');
+  n.y=-80;
+  assert.equal(context.relationGraphUpdateCaption(n,[],{width:600,height:400,requestedY:-164},true).above,false,'the top edge moves the caption below instead of pinning it outside');
+}
 for(const width of [320,480,760])for(const side of [-98,98]) {
   const previous={x:side,above:false,top:32,bottom:94};
   const moved={id:'main',x:width/4,y:0,labelWidth:112,boxHeight:104,captionRecipe:previous};
@@ -473,11 +528,18 @@ assert.equal(context.relationGraphCanDrift({groupId:'anthology'}),true,'soft gro
 assert.equal(context.relationGraphCanDrift({groupId:'family',current:true}),false,'current work has no automatic drift');
 {
   const blocked={n:{x:-60,y:40},targetX:-100,targetY:100,vx:-12,vy:15};
+  context.relationGraphSetDragTarget(blocked,{x:-100,y:100});
   context.relationGraphReconcileDrag(blocked,{x:-80,y:60});
   assert.equal(blocked.targetX,-60);assert.equal(blocked.targetY,40);
   assert.equal(blocked.vx,0);assert.equal(blocked.vy,0);
+  for(let move=0;move<120;move++) {
+    assert.equal(context.relationGraphSetDragTarget(blocked,{x:-100,y:100}),false,'repeated out-of-bounds corner input cannot rearm a blocked target');
+    assert.equal(blocked.targetX,-60);assert.equal(blocked.targetY,40);
+  }
   context.relationGraphDragSpring(blocked.n,blocked);
   assert.equal(blocked.n.x,-60);assert.equal(blocked.n.y,40,'blocked pointer rests at the reachable point instead of repeatedly fighting the wall');
+  assert.equal(context.relationGraphSetDragTarget(blocked,{x:-100,y:80}),true,'moving along the wall releases the old contact projection');
+  assert.equal(blocked.targetX,-100);assert.equal(blocked.targetY,80);
 }
 const elastic={x:0,y:0,vx:0,vy:0},elasticTarget={x:80,y:-40};
 context.relationGraphElasticPoint(elastic,elasticTarget);
@@ -515,6 +577,33 @@ const avoidCurrent=context.relationGraphCurve({id:'0',x:-130,y:0,labelWidth:112,
 assert.ok(avoidCurrent.point(.5).y < -19 || avoidCurrent.point(.5).y > 124,'peer relation bends around current work rather than through its cover');
 console.log('PASS simple directional labels, small layouts, and avoiding current cover');
 const dragNode={x:0,y:0},dragSpring={targetX:60,targetY:20,vx:0,vy:0};
+for(const sx of [-1,1])for(const sy of [-1,1]) {
+  const n={id:'held',groupId:'pair',x:sx*1000,y:sy*1000,labelWidth:112,boxHeight:124,captionAbove:sy>0,captionTop:-94};
+  const limits={width:800,height:600};
+  context.relationGraphFitDragNode(n,limits);
+  const accepted={x:n.x,y:n.y};
+  for(let frame=0;frame<120;frame++) {
+    const target={...n,x:sx*1000,y:sy*1000};
+    context.relationGraphFitDragNode(target,limits);
+    const spring={targetX:target.x,targetY:target.y,vx:0,vy:0};
+    context.relationGraphDragSpring(n,spring,false,limits);
+    context.relationGraphFitBody([n],n,limits);
+    assert.ok(Math.hypot(n.x-accepted.x,n.y-accepted.y)<1e-8,'repeated pointer pressure and membrane fitting agree at corner '+sx+','+sy);
+  }
+}
+{
+  const n={id:'wan',x:-300,y:-250,labelWidth:112,boxHeight:110,captionAbove:true,captionTop:-92,captionOffset:0,
+    captionMetrics:{titleTop:56,kindTop:75,titleHeight:16,kindHeight:16,kindWidth:40}};
+  const limits={width:600,height:400};
+  context.relationGraphFitNode(n,limits);
+  const fitted={x:n.x,y:n.y},bounds=context.relationGraphBodyBounds('node:wan',[n]).outline;
+  assert.ok(Math.min(...bounds.map(p=>p.x))>=-288 && Math.min(...bounds.map(p=>p.y))>=-188,'node viewport fit protects its actual above-title and cover');
+  for(let frame=0;frame<120;frame++)context.relationGraphSoftStep([n],[],null,limits);
+  assert.ok(Math.hypot(n.x-fitted.x,n.y-fitted.y)<1e-8,'physics and repeated rendering cannot fight over different caption bounds');
+  const spring={targetX:-500,targetY:-500,vx:0,vy:0};
+  for(let frame=0;frame<120;frame++)context.relationGraphDragSpring(n,spring,false,limits);
+  assert.ok(Math.hypot(n.x-fitted.x,n.y-fitted.y)<1e-8,'drag uses the same reachable viewport boundary as collision fitting');
+}
 {
   const n={x:20,y:50},released=context.relationGraphReleaseSpring({n,targetX:150,targetY:-120,vx:22,vy:-22});
   let maximum=0;
@@ -595,10 +684,10 @@ assert.ok(facingCable.ex < -95,'stale attachment cannot select the far boundary 
 const videoRoot={id:'current',current:true,x:0,y:0,labelWidth:112,boxHeight:104};
 const videoNeighbours=[{id:'up',x:0,y:-120},{id:'left',x:-125,y:0},{id:'right',x:125,y:0},
   {id:'upper-left',x:-125,y:-120},{id:'upper-right',x:125,y:-120},{id:'lower',group:true,x:0,y:300}];
-const videoCaption=context.relationGraphCaptionPosition(videoRoot,videoNeighbours);
-assert.ok(videoCaption.x!==0,'the lower group connection participates in root caption placement');
+const videoCaption=context.relationGraphUpdateCaption(videoRoot,videoNeighbours);
+assert.ok(videoCaption.x===0 && !videoCaption.above,'current badge stays below even when a group cable points down');
 const belowLeft=context.relationGraphCaptionPosition({...videoNeighbours[1],labelWidth:112},[{...videoRoot,captionOffset:videoCaption.x}]);
-assert.ok(belowLeft.above,'the neighbouring caption clears the relocated current-work caption');
+assert.equal(belowLeft.x,0,'neighbouring caption also stays centred on its cover');
 for(const [x,y] of [[0,220],[120,220],[280,0],[-160,-120]]) {
   const body={id:'lower',group:true,x,y,outline:[{x:x-75,y:y-45},{x:x+75,y:y-45},{x:x+75,y:y+45},{x:x-75,y:y+45}]};
   const curve=context.relationGraphGroupConnector({...videoRoot,captionOffset:videoCaption.x},body,{neighbours:videoNeighbours});
