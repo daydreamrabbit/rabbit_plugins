@@ -447,6 +447,66 @@
 .ds-recommendations .ds-section-heading { margin-top: 38px; }
 .ds-relation-label { display: block; padding: 5px 8px; border: 1px solid var(--ds-border); border-bottom: 0; border-radius: 5px 5px 0 0; background: var(--ds-panel); color: var(--ds-text); font-size: 11px; font-weight: 700; line-height: 1.35; text-align: center; }
 .ds-relation-book .ds-book-art { border-radius: 0 0 5px 5px; }
+.ds-relation-graph { min-width: 0; }
+.ds-relation-graph-stage { --graph-tone: var(--ds-accent); --graph-tone-0: color-mix(in srgb, var(--ds-accent) 82%, var(--ds-text)); --graph-tone-1: color-mix(in srgb, #a78bfa 78%, var(--ds-text)); --graph-tone-2: color-mix(in srgb, #43b9a6 78%, var(--ds-text)); --graph-tone-3: color-mix(in srgb, #d6a34d 78%, var(--ds-text)); position: relative; isolation: isolate; width: 100%; min-width: 0; background: transparent; color: var(--ds-text); }
+.ds-relation-node[data-relation-kind="spin_off"] { --graph-tone: var(--graph-tone-3); }
+.ds-relation-node[data-relation-kind="side_story"] { --graph-tone: var(--graph-tone-1); }
+.ds-relation-node[data-relation-kind="original"], .ds-relation-node[data-relation-kind="main_story"] { --graph-tone: var(--graph-tone-2); }
+.ds-relation-node[data-relation-kind="prequel"] { --graph-tone: var(--graph-tone-2); }
+.ds-relation-node[data-relation-kind="sequel"] { --graph-tone: var(--graph-tone-1); }
+.ds-relation-node[data-group-tone="0"], .ds-relation-cluster[data-group-tone="0"] { --graph-tone: var(--graph-tone-0); }
+.ds-relation-node[data-group-tone="1"], .ds-relation-cluster[data-group-tone="1"] { --graph-tone: var(--graph-tone-1); }
+.ds-relation-node[data-group-tone="2"], .ds-relation-cluster[data-group-tone="2"] { --graph-tone: var(--graph-tone-2); }
+.ds-relation-node[data-group-tone="3"], .ds-relation-cluster[data-group-tone="3"] { --graph-tone: var(--graph-tone-3); }
+.ds-relation-node[data-relation-kind="adaptation"], .ds-relation-cluster[data-group-category="adaptation"] { --graph-tone: var(--graph-tone-3); }
+.ds-relation-graph-canvas { position: absolute; inset: 0; pointer-events: none; }
+.ds-relation-graph-nodes { position: absolute; inset: 0; }
+.ds-relation-cluster { position: absolute; top: 0; left: 0; z-index: 0; pointer-events: none; }
+.ds-relation-cluster-shape { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.ds-relation-cluster-shape path { fill: color-mix(in srgb, var(--graph-tone) 5%, transparent); stroke: color-mix(in srgb, var(--graph-tone) 72%, transparent); stroke-width: 1.6; filter: drop-shadow(0 0 4px color-mix(in srgb, var(--graph-tone) 24%, transparent)); }
+.ds-relation-cluster-caption { position: absolute; top: 16px; left: 50%; width: 154px; max-width: calc(100% - 48px); padding: 0; transform: translate(-50%, 0); border: 0; background: transparent; color: var(--ds-text); text-shadow: 0 1px 3px var(--ds-panel); font: inherit; font-size: 12px; font-weight: 700; line-height: 1.5; text-align: center; }
+.ds-relation-cluster::after { content: ''; position: absolute; width: 6px; height: 6px; border-radius: 50%; background: var(--graph-tone); box-shadow: 0 0 6px 2px var(--graph-tone); offset-path: var(--graph-outline); animation: ds-relation-cluster-orbit 48s linear infinite; }
+.ds-relation-cluster-pair::after { animation-duration: 42s; animation-direction: reverse; }
+@keyframes ds-relation-cluster-orbit { to { offset-distance: 100%; } }
+@media (prefers-reduced-motion: reduce) { .ds-relation-cluster::after { animation: none; } }
+.ds-relation-cluster-caption small { display: block; margin-top: 3px; font: inherit; font-size: 11px; color: var(--ds-muted); }
+.ds-relation-cluster-pair .ds-relation-cluster-caption { top: 12px; }
+.ds-relation-edge-label { position: absolute; top: 0; left: 0; z-index: 1; padding: 3px 7px; border: 1px solid var(--ds-border); border-radius: 7px; background: color-mix(in srgb, var(--ds-panel) 96%, transparent); color: var(--ds-text); font: inherit; font-size: 11px; line-height: 1.4; white-space: nowrap; pointer-events: none; }
+.ds .ds-relation-node { z-index: 2; }
+.ds-relation-edge-label-roles { max-width: 174px; padding: 6px 8px; }
+.ds-relation-edge-role-row { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: start; gap: 6px; text-align: left; line-height: 1.4; }
+.ds-relation-edge-role-row + .ds-relation-edge-role-row { margin-top: 4px; }
+.ds-relation-edge-role-row strong { color: var(--ds-muted); font-size: 10px; font-weight: 600; }
+.ds-relation-edge-role-row > span { font-size: 11px; font-weight: 600; overflow-wrap: anywhere; }
+.ds .ds-relation-node { position: absolute; top: 0; left: 0; display: flex; flex-direction: column; align-items: center; width: 112px; margin: 0; padding: 0; border: 0; background: transparent; color: var(--ds-text); font: inherit; line-height: 1.35; text-align: center; touch-action: none; user-select: none; -webkit-user-select: none; }
+.ds-relation-node-art { position: relative; display: grid; place-items: center; flex-shrink: 0; width: 48px; height: 48px; border: 2px solid var(--graph-tone); border-radius: 50%; background: var(--ds-soft); color: var(--ds-muted); box-shadow: 0 0 0 3px color-mix(in srgb, var(--graph-tone) 15%, transparent); font-size: 11px; transition: transform .18s ease, box-shadow .18s ease; }
+.ds-relation-node[data-relation-kind="spin_off"] .ds-relation-node-art { border-style: dashed; }
+.ds-relation-node[data-relation-kind="side_story"] .ds-relation-node-art { border-width: 3px; border-style: double; }
+.ds .ds-relation-node-art img { display: block; width: 100%; height: 100% !important; min-height: 0; border-radius: 50%; object-fit: cover; object-position: 50% 20%; pointer-events: none; }
+.ds-relation-node-art::before { content: ''; position: absolute; inset: -7px; border: 2px solid transparent; border-top-color: color-mix(in srgb, var(--graph-tone) 78%, transparent); border-right-color: color-mix(in srgb, var(--graph-tone) 32%, transparent); border-radius: 50%; pointer-events: none; animation: ds-relation-orbit 64s linear infinite; }
+.ds-relation-node-art[data-step]::after { content: attr(data-step); position: absolute; right: -8px; bottom: -5px; min-width: 20px; padding: 1px 3px; border: 1px solid var(--graph-tone); border-radius: 6px; background: var(--ds-panel); color: var(--ds-text); font-size: 10px; font-weight: 700; line-height: 1.4; }
+.ds-relation-node:nth-child(2n) .ds-relation-node-art::before { animation-direction: reverse; animation-duration: 76s; }
+.ds-relation-node:nth-child(3n) .ds-relation-node-art::before { animation-delay: -9s; }
+.ds-relation-node.is-dragging .ds-relation-node-art { transform: scale(1.08); }
+.ds-relation-graph-stage[data-running="false"] .ds-relation-node-art::before { animation-play-state: paused; }
+@keyframes ds-relation-orbit { to { transform: rotate(360deg); } }
+.ds-relation-node[data-current="true"] .ds-relation-node-art { width: 60px; height: 60px; box-shadow: 0 0 0 2px var(--graph-tone); }
+.ds .ds-relation-node:is(:hover, :focus-visible, .is-dragging) { z-index: 6; }
+.ds-relation-node:is(:hover, :focus-visible) .ds-relation-node-art { transform: scale(1.14); box-shadow: 0 0 0 5px color-mix(in srgb, var(--graph-tone) 28%, transparent), 0 5px 18px color-mix(in srgb, var(--graph-tone) 26%, transparent); }
+.ds-relation-node-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; width: 100%; margin-top: 8px; font-size: 11px; overflow-wrap: anywhere; }
+.ds-relation-node-kind { display: block; margin-top: 3px; color: var(--ds-muted); font-size: 11px; }
+.ds-relation-node-kind:has(.ds-relation-node-relations) { display: flex; flex-direction: column; gap: 3px; }
+.ds-relation-node[data-caption-position="above"] .ds-relation-node-kind { flex-direction: column-reverse; }
+.ds-relation-node-relations { color: var(--graph-tone); font-weight: 600; }
+.ds-relation-graph-status { margin-top: 8px; color: var(--ds-muted); font-size: 12px; }
+.ds-relation-preview { position: absolute; top: 0; left: 0; z-index: 30; display: flex; gap: 12px; width: 280px; max-width: calc(100% - 16px); padding: 12px; border: 1px solid color-mix(in srgb, var(--graph-tone) 50%, var(--ds-border)); border-radius: 13px; background: var(--ds-panel); color: var(--ds-text); box-shadow: 0 12px 32px #0004, 0 0 0 3px color-mix(in srgb, var(--graph-tone) 9%, transparent); pointer-events: none; }
+.ds .ds-relation-preview > img { display: block; flex: 0 0 94px; width: 94px; height: 140px !important; min-height: 0; border: 1px solid var(--ds-border); border-radius: 7px; object-fit: contain; background: var(--ds-soft); }
+.ds-relation-preview-info { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; gap: 8px; }
+.ds-relation-preview-kind { padding: 2px 7px; border-radius: 5px; background: color-mix(in srgb, var(--graph-tone) 13%, var(--ds-panel)); color: var(--ds-text); font-size: 11px; font-weight: 700; }
+.ds-relation-preview-info strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; font-size: 13px; line-height: 1.5; }
+.ds-relation-preview-series, .ds-relation-preview-info small { color: var(--ds-muted); font-size: 11px; line-height: 1.4; }
+.ds-relation-preview-info small { margin-top: auto; }
+@media (prefers-reduced-motion: reduce) { .ds-relation-node-art { transition: none; } .ds-relation-node-art::before { animation: none; } }
 .ds-relation-type-badge { position: absolute; left: 6px; bottom: 6px; z-index: 1; padding: 3px 7px; border: 1px solid #ffffff40; border-radius: 4px; background: rgba(10, 15, 22, .88); color: #fff; font-size: 11px; font-weight: 700; line-height: 1.3; pointer-events: none; }
 .ds-books { display: grid; grid-template-columns: repeat(auto-fill, minmax(125px, 1fr)); gap: 22px 16px; }
 .ds-empty { grid-column: 1 / -1; padding: 30px 16px; color: var(--ds-muted); font-size: 12px; text-align: center; }
@@ -626,6 +686,7 @@
       "edit edit"
       "metadata-search metadata-search"
       "discovery discovery"
+      "relation-graph relation-graph"
       "relations relations"
       "recommendations recommendations";
     gap: 10px 16px;
@@ -768,6 +829,7 @@
   .ds-summary.ds-clamped { -webkit-line-clamp: 6; }
   .ds-series { grid-area: series; min-width: 0; }
   .ds-relations { grid-area: relations; min-width: 0; }
+  .ds-relation-graph { grid-area: relation-graph; min-width: 0; }
   .ds-recommendations { grid-area: recommendations; min-width: 0; }
   .ds-edit-panel { grid-area: edit; }
   .ds-metadata-search { grid-area: metadata-search; }

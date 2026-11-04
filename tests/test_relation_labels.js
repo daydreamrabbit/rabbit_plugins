@@ -6,7 +6,7 @@ const vm = require('vm');
 const source = fs.readFileSync(path.join(__dirname, '../detail/script.js'), 'utf8');
 const labelStart = source.indexOf('  const relationLabels = {');
 const labelEnd = source.indexOf('  let type =', labelStart);
-const renderStart = source.indexOf('  function renderRelations(relations) {');
+const renderStart = source.indexOf('  function renderRelations(');
 const renderEnd = source.indexOf('  function renderRecommendations(items) {', renderStart);
 assert.ok(labelStart > 0 && labelEnd > labelStart && renderStart > 0 && renderEnd > renderStart);
 
@@ -15,6 +15,7 @@ const target = { cards: [], replaceChildren(...cards) { this.cards = cards; } };
 const context = {
   Set,
   canEdit: false,
+  renderRelationGraph() {},
   $: selector => selector === '[data-relations-section]' ? section : target,
   bookCard: (book, _index, _related, label) => ({ name: book.series_name, label }),
 };

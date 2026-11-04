@@ -63,7 +63,7 @@ from flask import g, has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '4.3.3'
+PLUGIN_VERSION = '5.0.0'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -4006,6 +4006,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
 
     config_schema = [
         {'key': 'support_summary_html', 'label': 'ComicInfo 소개 이미지 표시', 'type': 'checkbox', 'default': True},
+        {'key': 'relation_graph_enabled', 'label': '관계도 표시', 'type': 'checkbox', 'default': True},
+        {'key': 'relation_graph_mobile_enabled', 'label': '모바일에서 관계도 표시', 'type': 'checkbox', 'default': True},
         {'key': 'series_db_path', 'label': 'Series.db 경로', 'type': 'text', 'default': ''},
         {'key': 'series_auto_update_enabled', 'label': 'Series DB 매일 자동 갱신', 'type': 'checkbox', 'default': True},
         {'key': 'exclude_tags', 'label': '제외할 태그', 'type': 'text', 'default': ''},
@@ -7186,6 +7188,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 'manual_chapter_count': stored_dates.get('manual_chapter_count'),
                 'manual_empty_fields': stored_dates.get('manual_empty_fields') or [],
                 'support_summary_html': support_summary_html, 'exclude_tags': exclude_tags,
+                'relation_graph_enabled': _config_bool(config.get('relation_graph_enabled'), True),
+                'relation_graph_mobile_enabled': _config_bool(config.get('relation_graph_mobile_enabled'), True),
                 'exclude_genres': exclude_genres, 'metadata_sources': _metadata_source_order(config),
                 'metadata_auto_enabled': _config_bool(config.get('metadata_auto_enabled'), False),
                 'metadata_hold': _read_metadata_hold(
@@ -7199,12 +7203,17 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             }
 
         if mode == 'discovery':
+            include_graph = request.args.get('graph') == '1'
             result = self._discovery_data(
-                gateway, target, permission, libraries, visible, check_book_rating_permission, db_type, limit)
+                gateway, target, permission, libraries, visible, check_book_rating_permission, db_type, limit,
+                include_graph=include_graph)
             from . import manual_relations
             linked = manual_relations.cards(gateway, target, permission, libraries, visible,
                                              check_book_rating_permission, db_type)
-            return manual_relations.merge_result(result, linked, manual_relations.suppressed(gateway, target))
+            result = manual_relations.merge_result(result, linked, manual_relations.suppressed(gateway, target))
+            if include_graph:
+                result['relation_graph'] = self._merge_relation_graph(gateway, result)
+            return result
         return self._similar_data(
             gateway, target, permission, libraries, visible, check_book_rating_permission, db_type, limit)
 
@@ -7521,8 +7530,59 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         except (OSError, sqlite3.Error):
             return {}
 
+    @staticmethod
+    def _graph_identity(item):
+        return (str(item['library_id']), str(item['series_name']))
+
+    @classmethod
+    def _source_graph_edges(cls, rows, items):
+        """Explicit edges between already-visible local works, without traversal."""
+        edges, seen = [], set()
+        for source_id, row in rows.items():
+            if source_id not in items:
+                continue
+            for kind, targets in _series_relation_ids(row).items():
+                for target_id in targets:
+                    if target_id not in items:
+                        continue
+                    a, b = cls._graph_identity(items[source_id]), cls._graph_identity(items[target_id])
+                    edge_kind = kind
+                    if kind == 'prequel':
+                        a, b, edge_kind = b, a, 'sequel'
+                    key = (a, b, edge_kind)
+                    if a == b or key in seen:
+                        continue
+                    seen.add(key)
+                    edges.append({'source_key': list(a), 'target_key': list(b), 'relation_type': edge_kind})
+        return edges
+
+    @classmethod
+    def _merge_relation_graph(cls, gateway, result):
+        from . import manual_relations
+        allowed = {cls._graph_identity(item) for items in result.get('relations', {}).values() for item in items}
+        edges = [edge for edge in (result.get('relation_graph') or {}).get('edges', [])
+                 if tuple(edge['source_key']) in allowed and tuple(edge['target_key']) in allowed]
+        # Saved overrides and disabled links also apply between graph members.
+        for disabled in (True, False):
+            for _, pair, kinds in manual_relations.edges(gateway, disabled=disabled):
+                if not all(isinstance(item, list) and len(item) == 2 for item in pair):
+                    continue
+                a, b = ((str(item[0]), str(item[1])) for item in pair)
+                if a not in allowed or b not in allowed or a == b:
+                    continue
+                edges = [edge for edge in edges if
+                         {tuple(edge['source_key']), tuple(edge['target_key'])} != {a, b}]
+                if disabled:
+                    continue
+                kind = kinds[0] if isinstance(kinds, list) and len(kinds) == 2 else 'other'
+                if kind == 'prequel':
+                    a, b, kind = b, a, 'sequel'
+                edges.append({'source_key': list(a), 'target_key': list(b),
+                              'relation_type': kind if kind in RELATION_KINDS else 'other', 'manual': True})
+        return {'edges': edges}
+
     def _discovery_data(self, gateway, target, permission, libraries, visible,
-                        check_rating, db_type, limit, relations_only=False):
+                        check_rating, db_type, limit, relations_only=False, include_graph=False):
         index_path = self._series_index()
         if not index_path:
             if relations_only:
@@ -7751,6 +7811,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             return _series_title_key(item['series_name'])
 
         relations = {}
+        graph_items = {}
         relation_seen = set()
         for kind, ids in relation_ids.items():
             items, seen = [], set()
@@ -7768,13 +7829,21 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                     items.append(item)
                     seen.add(key)
                     relation_seen.add(key)
+                if include_graph and item and key in relation_seen:
+                    graph_items[series_id] = item
                 if len(items) >= limit:
                     break
             if items:
                 relations[kind] = items
 
+        graph_result = {}
+        if include_graph and graph_items:
+            # One bounded source query. It never adds nodes or changes the
+            # direct relation categories used by the existing card list.
+            graph_result['relation_graph'] = {'edges': self._source_graph_edges(
+                self._source_series_rows(list(graph_items)), graph_items)}
         if relations_only:
-            return {'success': True, 'relations': relations, 'recommendations': []}
+            return {'success': True, 'relations': relations, 'recommendations': [], **graph_result}
         related_keys = {work_key(item) for items in relations.values() for item in items}
         recommended, seen = [], set()
         for source in recommendations:
@@ -7801,7 +7870,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             recommended = self._random_genre_tag_recommendations(
                 gateway, target, permission, libraries, visible, check_rating, db_type, limit,
                 excluded=related_keys)
-        return {'success': True, 'relations': relations, 'recommendations': recommended[:limit]}
+        return {'success': True, 'relations': relations, 'recommendations': recommended[:limit], **graph_result}
 
     def _matching_book_rows(self, gateway, target, permission, libraries, groups, random_order=False):
         condition, values = _term_filter(groups)

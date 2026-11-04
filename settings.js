@@ -1,6 +1,6 @@
 (function () {
   const savedConfig = (typeof config === 'object' && config) ? config : {};
-  ['metadata_auto_enabled', 'metadata_collect_cover', 'metadata_manual_overwrite', 'metadata_overwrite', 'metadata_cover_overwrite', 'support_summary_html', 'series_auto_update_enabled']
+  ['metadata_auto_enabled', 'metadata_collect_cover', 'metadata_manual_overwrite', 'metadata_overwrite', 'metadata_cover_overwrite', 'support_summary_html', 'series_auto_update_enabled', 'relation_graph_enabled', 'relation_graph_mobile_enabled']
     .forEach(name => {
       const input = root.querySelector(`[name="${name}"]`);
       if (input && Object.prototype.hasOwnProperty.call(savedConfig, name)) input.checked = !!savedConfig[name];
