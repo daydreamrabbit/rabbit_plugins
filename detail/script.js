@@ -1469,12 +1469,6 @@
     const rows = [];
     if (books.length < 2) rows.push(['파일포맷', formats.join(' / ') || '—']);
     if (!onlyChapters && (media || !isStandalone())) rows.push([countLabel, String(totalVolumes)]);
-    if (pureVolumes && !isStandalone()) {
-      const owned = [...new Set(books.map(volumeNumber).filter(value => value > 0 && value < 100000))].sort((a,b) => a-b);
-      if (owned.length) rows.push(['보유 권번호', owned.slice(0,30).map(numberText).join(', ') + '권' + (owned.length > 30 ? ' 외 ' + (owned.length-30) + '권' : '')]);
-      const holdings = meta.holdings_coverage || {};
-      if (holdings.holdings_status === 'missing' && holdings.holdings_label) rows.push(['보유 상태', holdings.holdings_label]);
-    }
     const chapters = Number(meta.manual_chapter_count || (['완결', '연재중단'].includes(explicitStatus) ? meta.publication_coverage?.total : 0) || 0);
     if (Number.isInteger(chapters) && chapters > 0) {
       rows.push(['회차 수', String(chapters)]);
@@ -1530,7 +1524,10 @@
         const published = publicationDate();
         rows.push(['출간일', published ? String(published).slice(0, 10) : '—']);
       } else {
-        rows.push(['연재상태', pureVolumes && !standalone ? (hasExplicitStatus ? explicitStatus : '알 수 없음') : status]);
+        const holdings = meta.holdings_coverage || {};
+        const volumeStatus = holdings.holdings_status === 'missing' && holdings.holdings_label
+          ? holdings.holdings_label : (hasExplicitStatus ? explicitStatus : '알 수 없음');
+        rows.push(['연재상태', pureVolumes && !standalone ? volumeStatus : status]);
         rows.push(['연재시작일', meta.publication_dates?.start || '—']);
         rows.push(['연재종료일', meta.publication_dates?.end || '—']);
       }

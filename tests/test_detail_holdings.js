@@ -35,12 +35,13 @@ function facts(options = {}) {
 }
 const owned = facts();
 assert.equal(owned['보유 권수'], '1');
-assert.equal(owned['보유 권번호'], '2권');
-assert.equal(owned['보유 상태'], '1권 누락');
-assert.equal(owned['연재상태'], '알 수 없음');
+assert(!('보유 권번호' in owned));
+assert(!('보유 상태' in owned));
+assert.equal(owned['연재상태'], '1권 누락');
+assert.equal(facts({meta: {holdings_coverage: {holdings_status: 'available'}}})['연재상태'], '알 수 없음');
 assert(!('총권수' in owned));
-assert.equal(facts({meta: {publication_status_label: '완결'}})['연재상태'], '완결');
-assert.equal(facts({meta: {publication_status_label: '연재', comicinfo_count: 0}, books: [{volume: 31}]})['연재상태'], '연재');
+assert.equal(facts({meta: {publication_status_label: '완결', holdings_coverage: {holdings_status: 'available'}}})['연재상태'], '완결');
+assert.equal(facts({meta: {publication_status_label: '연재', comicinfo_count: 0, holdings_coverage: {holdings_status: 'available'}}, books: [{volume: 31}]})['연재상태'], '연재');
 assert(!('보유 상태' in facts({standalone: true, books: [{volume: 100000}]})));
 assert.equal(facts({standalone: true})['연재상태'], '단편');
 assert.equal(facts({media: true, type: 'audiobook'})['트랙 수'], '2');
