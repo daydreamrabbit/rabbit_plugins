@@ -545,6 +545,7 @@ for(const id of ['0','1','7','12'])for(let time=0;time<120;time+=.1) {
 assert.notDeepEqual(context.relationGraphDrift('0',10),context.relationGraphDrift('1',10),'works drift independently');
 assert.equal(context.relationGraphCanDrift({id:'wan'}),false,'ordinary spin-off does not move its cable at idle');
 assert.equal(context.relationGraphCanDrift({groupId:'anthology'}),true,'soft group members retain gentle floating');
+assert.equal(context.relationGraphCanDrift({id:'recommendation'},true),true,'recommendation works retain gentle idle motion');
 assert.equal(context.relationGraphCanDrift({groupId:'family',current:true}),false,'current work has no automatic drift');
 {
   const blocked={n:{x:-60,y:40},targetX:-100,targetY:100,vx:-12,vy:15};

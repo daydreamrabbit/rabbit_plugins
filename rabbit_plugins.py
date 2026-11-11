@@ -63,7 +63,7 @@ from flask import g, has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '5.0.5'
+PLUGIN_VERSION = '5.0.6'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -4030,6 +4030,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         {'key': 'relation_graph_enabled', 'label': '관계도 표시', 'type': 'checkbox', 'default': True},
         {'key': 'relation_graph_mobile_enabled', 'label': '모바일에서 관계도 표시', 'type': 'checkbox', 'default': True},
         {'key': 'recommendation_graph_enabled', 'label': '추천 관계도 표시', 'type': 'checkbox', 'default': True},
+        {'key': 'relation_graph_motion_enabled', 'label': '관계도 움직임 효과', 'type': 'checkbox', 'default': True},
         {'key': 'series_db_path', 'label': 'Series.db 경로', 'type': 'text', 'default': ''},
         {'key': 'series_auto_update_enabled', 'label': 'Series DB 매일 자동 갱신', 'type': 'checkbox', 'default': True},
         {'key': 'exclude_tags', 'label': '제외할 태그', 'type': 'text', 'default': ''},
@@ -7213,6 +7214,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 'relation_graph_enabled': _config_bool(config.get('relation_graph_enabled'), True),
                 'relation_graph_mobile_enabled': _config_bool(config.get('relation_graph_mobile_enabled'), True),
                 'recommendation_graph_enabled': _config_bool(config.get('recommendation_graph_enabled'), True),
+                'relation_graph_motion_enabled': _config_bool(config.get('relation_graph_motion_enabled'), True),
                 'exclude_genres': exclude_genres, 'metadata_sources': _metadata_source_order(config),
                 'metadata_auto_enabled': _config_bool(config.get('metadata_auto_enabled'), False),
                 'metadata_hold': _read_metadata_hold(

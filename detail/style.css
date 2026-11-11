@@ -468,7 +468,11 @@
 .ds-relation-cluster::after { content: ''; position: absolute; width: 6px; height: 6px; border-radius: 50%; background: var(--graph-tone); box-shadow: 0 0 6px 2px var(--graph-tone); offset-path: var(--graph-outline); animation: ds-relation-cluster-orbit 48s linear infinite; }
 .ds-relation-cluster-pair::after { animation-duration: 42s; animation-direction: reverse; }
 @keyframes ds-relation-cluster-orbit { to { offset-distance: 100%; } }
-@media (prefers-reduced-motion: reduce) { .ds-relation-cluster::after { animation: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .ds-relation-cluster::after { animation: none; }
+  .ds-relation-graph-stage[data-motion="true"] .ds-relation-cluster::after { animation: ds-relation-cluster-orbit 48s linear infinite; }
+  .ds-relation-graph-stage[data-motion="true"] .ds-relation-cluster-pair::after { animation-duration: 42s; animation-direction: reverse; }
+}
 .ds-relation-cluster-caption small { display: block; margin-top: 3px; font: inherit; font-size: 11px; color: var(--ds-muted); }
 .ds-relation-cluster-pair .ds-relation-cluster-caption { top: 12px; }
 .ds-relation-edge-label { position: absolute; top: 0; left: 0; z-index: 1; padding: 3px 7px; border: 1px solid var(--ds-border); border-radius: 7px; background: color-mix(in srgb, var(--ds-panel) 96%, transparent); color: var(--ds-text); font: inherit; font-size: 11px; line-height: 1.4; white-space: nowrap; pointer-events: none; }
@@ -489,6 +493,10 @@
 .ds-relation-node:nth-child(3n) .ds-relation-node-art::before { animation-delay: -9s; }
 .ds-relation-node.is-dragging .ds-relation-node-art { transform: scale(1.08); }
 .ds-relation-graph-stage[data-running="false"] .ds-relation-node-art::before { animation-play-state: paused; }
+.ds-relation-graph-stage[data-motion="false"] .ds-relation-node-art::before,
+.ds-relation-graph-stage[data-motion="false"] .ds-relation-cluster::after { animation: none !important; }
+.ds-relation-graph-stage[data-running="false"][data-motion="true"] .ds-relation-node-art::before,
+.ds-relation-graph-stage[data-running="false"][data-motion="true"] .ds-relation-cluster::after { animation-play-state: paused; }
 @keyframes ds-relation-orbit { to { transform: rotate(360deg); } }
 .ds-relation-node[data-current="true"] .ds-relation-node-art { width: 60px; height: 60px; box-shadow: 0 0 0 2px var(--graph-tone); }
 .ds .ds-relation-node:is(:hover, :focus-visible, .is-dragging) { z-index: 6; }
@@ -507,7 +515,13 @@
 .ds-relation-preview-info strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; font-size: 13px; line-height: 1.5; }
 .ds-relation-preview-series, .ds-relation-preview-info small { color: var(--ds-muted); font-size: 11px; line-height: 1.4; }
 .ds-relation-preview-info small { margin-top: auto; }
-@media (prefers-reduced-motion: reduce) { .ds-relation-node-art { transition: none; } .ds-relation-node-art::before { animation: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .ds-relation-node-art { transition: none; }
+  .ds-relation-node-art::before { animation: none; }
+  .ds-relation-graph-stage[data-motion="true"] .ds-relation-node-art::before { animation: ds-relation-orbit 64s linear infinite; }
+  .ds-relation-graph-stage[data-motion="true"] .ds-relation-node:nth-child(2n) .ds-relation-node-art::before { animation-direction: reverse; animation-duration: 76s; }
+  .ds-relation-graph-stage[data-motion="true"] .ds-relation-node:nth-child(3n) .ds-relation-node-art::before { animation-delay: -9s; }
+}
 .ds-relation-type-badge { position: absolute; left: 6px; bottom: 6px; z-index: 1; padding: 3px 7px; border: 1px solid #ffffff40; border-radius: 4px; background: rgba(10, 15, 22, .88); color: #fff; font-size: 11px; font-weight: 700; line-height: 1.3; pointer-events: none; }
 .ds-books { display: grid; grid-template-columns: repeat(auto-fill, minmax(125px, 1fr)); gap: 22px 16px; }
 .ds-empty { grid-column: 1 / -1; padding: 30px 16px; color: var(--ds-muted); font-size: 12px; text-align: center; }

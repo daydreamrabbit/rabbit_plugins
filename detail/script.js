@@ -2343,10 +2343,11 @@
       y:noise(time/7.5+seed%17,seed+19)*2.5+noise(time/17,seed+31)*.7};
   }
 
-  function relationGraphCanDrift(n) {
+  function relationGraphCanDrift(n, recommendations = false) {
     // Gentle idle floating belongs to books inside a soft group only.
-    // Ordinary spokes must not keep rerouting while nobody is dragging.
-    return Boolean(n.groupId && !n.current && !n.group);
+    // Recommendation spokes get a smaller drift at the call site; ordinary
+    // relation spokes must not keep rerouting while nobody is dragging.
+    return Boolean((n.groupId || recommendations) && !n.current && !n.group);
   }
 
   function relationGraphReconcileDrag(spring,before) {
@@ -3223,6 +3224,8 @@
     relationGraph?.destroy();
     const stage = $('[data-relation-graph-stage]'), status = $('[data-relation-graph-status]');
     stage.replaceChildren(); status.hidden = true;
+    const motionEnabled=relationGraphSettings?.motionEnabled!==false;
+    stage.dataset.motion=String(motionEnabled);
     const displaySettings=relationGraphSettings && {...relationGraphSettings,enabled:graphData.recommendations?relationGraphSettings.recommendationsEnabled:relationGraphSettings.enabled};
     section.querySelector('h2').textContent=graphData.recommendations?'추천 관계도':'관계도';
     section.hidden = !works.length || !relationGraphVisible(displaySettings,relationGraphMobile.matches);
@@ -3256,7 +3259,9 @@
     const profileEnabled=new URLSearchParams(location.search).has('rabbitGraphProfile');
     const profile={idle:[],drag:[],last:0,mode:'',published:0};
     let lastTheme = 0;
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // This graph has its own user setting. The default remains animated even
+    // when the browser inherits Windows' reduced-motion preference.
+    const reducedMotion = !motionEnabled;
     const links = relationGraphLinks(nodes, topology);
     for(const n of nodes){n.extraRelations=relationGraphNodeRelations(n,links,nodes);n.peerDescriptions=relationGraphPeerDescriptions(n,links,nodes);}
     const adjacency={};
@@ -3692,10 +3697,11 @@
           stage.dataset.settling=String(Boolean(drag?.moved || settleFrames>0));
           const time=performance.now()/1000-motionEpoch;
           for(const n of nodes.filter(n=>!n.group)) {
-            if(reducedMotion || !relationGraphCanDrift(n) || drag?.n===n){n.floatX=n.floatY=0;continue;}
+            if(reducedMotion || !relationGraphCanDrift(n,Boolean(graphData.recommendations)) || drag?.n===n){n.floatX=n.floatY=0;continue;}
             n.floatStrength+=((drag || settleFrames>0?0:1)-n.floatStrength)*.025;
             const drift=relationGraphDrift(n.id,time);
-            n.floatX=drift.x*n.floatStrength;n.floatY=drift.y*n.floatStrength;
+            const amplitude=graphData.recommendations ? 0.55 : 1;
+            n.floatX=drift.x*n.floatStrength*amplitude;n.floatY=drift.y*n.floatStrength*amplitude;
           }
         })
         .onRenderFramePost(() => {
@@ -4210,8 +4216,8 @@
       const data = preparedData || await request(apiUrl('files'));
       if (!root.isConnected || sequence !== detailDataSequence) return;
       summaryHtmlEnabled = data.support_summary_html === true;
-      const graphSettings={enabled:data.relation_graph_enabled!==false,mobileEnabled:data.relation_graph_mobile_enabled!==false,recommendationsEnabled:data.recommendation_graph_enabled!==false};
-      const graphSettingsChanged=!relationGraphSettings || graphSettings.enabled!==relationGraphSettings.enabled || graphSettings.mobileEnabled!==relationGraphSettings.mobileEnabled || graphSettings.recommendationsEnabled!==relationGraphSettings.recommendationsEnabled;
+      const graphSettings={enabled:data.relation_graph_enabled!==false,mobileEnabled:data.relation_graph_mobile_enabled!==false,recommendationsEnabled:data.recommendation_graph_enabled!==false,motionEnabled:data.relation_graph_motion_enabled!==false};
+      const graphSettingsChanged=!relationGraphSettings || graphSettings.enabled!==relationGraphSettings.enabled || graphSettings.mobileEnabled!==relationGraphSettings.mobileEnabled || graphSettings.recommendationsEnabled!==relationGraphSettings.recommendationsEnabled || graphSettings.motionEnabled!==relationGraphSettings.motionEnabled;
       relationGraphSettings=graphSettings;
       if(graphSettingsChanged)refreshRelationGraphDisplay();
       excludedGenres = excludedTerms(data.exclude_genres);
