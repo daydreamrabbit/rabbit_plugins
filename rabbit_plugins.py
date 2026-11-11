@@ -63,7 +63,7 @@ from flask import g, has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '5.0.4'
+PLUGIN_VERSION = '5.0.5'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -1719,6 +1719,16 @@ def _load_core_dependencies():
 def tokens(value):
     return {part.strip().casefold() for part in re.split(r'[,;|\n]', str(value or ''))
             if part.strip() and part.strip() != '-'}
+
+
+_RECOMMENDATION_IGNORED_TERMS = frozenset({'만화 e북', '만화연재', '개인스캔'})
+
+
+def _recommendation_tokens(field, value):
+    terms = tokens(value)
+    if field in ('genre', 'tags'):
+        terms.difference_update(_RECOMMENDATION_IGNORED_TERMS)
+    return terms
 
 
 def _term_filter(groups):
@@ -7918,7 +7928,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
 
     def _random_genre_tag_recommendations(self, gateway, target, permission, libraries,
                                           visible, check_rating, db_type, limit, excluded=()):
-        groups = {field: tokens(target[field]) for field in ('genre', 'tags')}
+        groups = {field: _recommendation_tokens(field, target[field]) for field in ('genre', 'tags')}
         rows = self._matching_book_rows(
             gateway, target, permission, libraries, groups, random_order=True)
         from services.book_service import get_cover_image_with_t
@@ -7930,8 +7940,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         for row in rows:
             if not visible(row) or (check_rating and not check_rating(db_type, row['id'])):
                 continue
-            shared_genres = groups['genre'] & tokens(row['genre'])
-            shared_tags = groups['tags'] & tokens(row['tags'])
+            shared_genres = groups['genre'] & _recommendation_tokens('genre', row['genre'])
+            shared_tags = groups['tags'] & _recommendation_tokens('tags', row['tags'])
             if _series_title_key(row['series_name']) in target_names or (not shared_genres and not shared_tags):
                 continue
             item = {
@@ -7955,7 +7965,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         signature = json.dumps([
             db_type, target, libraries, session.get('user_id'), session.get('content_rating_max', 18)
         ], sort_keys=True, ensure_ascii=False)
-        cache_key = 'similar-v6:' + hashlib.sha256(signature.encode()).hexdigest()
+        cache_key = 'similar-v7:' + hashlib.sha256(signature.encode()).hexdigest()
         if use_cache:
             try:
                 cached = self.cache_get(cache_key)
@@ -7970,7 +7980,11 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             except (ValueError, TypeError):
                 pass
 
-        groups = {field: tokens(target[field]) for field in ('author', 'tags')}
+        groups = {
+            'author': tokens(target['author']),
+            'genre': _recommendation_tokens('genre', target['genre']),
+            'tags': _recommendation_tokens('tags', target['tags']),
+        }
         rows = self._matching_book_rows(gateway, target, permission, libraries, groups)
         ranked = {}
         from services.book_service import get_cover_image_with_t
@@ -7980,10 +7994,14 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         for row in rows:
             if not visible(row):
                 continue
-            score = 6 * len(groups['author'] & tokens(row['author'])) + len(groups['tags'] & tokens(row['tags']))
-            # One shared tag is too weak to act as a recommendation by itself.
-            # Keep candidates only when they share an author or at least two tags.
-            if score < 2 or _series_title_key(row['series_name']) in target_names:
+            shared_author = groups['author'] & tokens(row['author'])
+            shared_genres = groups['genre'] & _recommendation_tokens('genre', row['genre'])
+            shared_tags = groups['tags'] & _recommendation_tokens('tags', row['tags'])
+            shared_descriptors = len(shared_genres | shared_tags)
+            score = 6 * len(shared_author) + shared_descriptors
+            # Generic catalog tags do not count. Keep a candidate only when it
+            # shares an author or at least two genre/tag descriptors.
+            if (not shared_author and shared_descriptors < 2) or _series_title_key(row['series_name']) in target_names:
                 continue
             key = (_series_title_key(row['series_name']), row['library_id'])
             item = {

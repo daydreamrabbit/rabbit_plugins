@@ -2324,6 +2324,14 @@
     return [...shuffle(mangaUpdates),...rankedSimilar,...shuffle(fallback),...shuffle(other)].slice(0,10);
   }
 
+  function relationGraphRecommendationTone(book,index=0) {
+    const identity=String(book?.recommendation_source||'recommendation')+':'+
+      String(book?.series_name||book?.display_name||book?.book_id||index);
+    let hash=2166136261;
+    for(let i=0;i<identity.length;i++)hash=Math.imul(hash^identity.charCodeAt(i),16777619);
+    return (hash>>>0)%4;
+  }
+
   function relationGraphDrift(id,time) {
     const seed=[...String(id)].reduce((value,c)=>value*31+c.charCodeAt(0),17)>>>0;
     const noise=(t,s)=>{
@@ -3224,6 +3232,7 @@
       cover: meta.cover_image || books[0]?.cover_image, current: true },
       ...works.map((work, index) => ({ id: String(index), label: work.book.display_name || work.book.series_name || '제목 없음',
         cover: work.book.cover, kind: work.label, relationType: work.type, book: work.book,
+        recommendationTone: graphData.recommendations?relationGraphRecommendationTone(work.book,index):undefined,
         shortLabel: String(work.book.display_name || work.book.series_name || '').replace(detailTitle(), '').replace(/^[:：\s·\-]+/u, '').trim() }))];
     for (const [index, group] of topology.groups.entries()) {
       for (const [step, id] of group.members.entries()) { const n = nodes.find(n => n.id === id); n.groupId = group.id;n.groupCategory=group.category; n.groupIndex = index; n.step = group.sequence ? step + 1 : null; if(group.category!=='focused-family')n.shortLabel = n.label.slice(group.prefix.length).replace(/^[:：\s·\-]+/u, '') || n.label; }
@@ -3494,6 +3503,7 @@
       button.dataset.graphNode = n.id;
       button.dataset.current = String(Boolean(n.current));
       button.dataset.relationKind = n.relationType || 'current';
+      if(Number.isInteger(n.recommendationTone))button.dataset.groupTone=String(n.recommendationTone);
       if(n.relationType==='adaptation'||n.groupCategory==='adaptation')button.style.setProperty('--graph-tone','var(--graph-tone-3)');
       else if (n.groupId && n.groupCategory!=='focused-family') button.style.setProperty('--graph-tone', `var(--graph-tone-${(n.groupIndex+(n.step||1)-1)%4})`);
       button.setAttribute('aria-label', n.label + ' · ' + n.kind + (n.current ? '' : ' · 상세 보기'));

@@ -48,6 +48,13 @@ assert.equal(context.relationGraphUpdateCaption({current:true,captionRecipe:{abo
     library_id:1,series_name:'fallback'+i,recommendation_source:'genre_tag_fallback'})),()=>0);
   assert.equal(broadFallback.length,10);
   assert.ok(broadFallback.every(book=>book.recommendation_source==='genre_tag_fallback'));
+  const tones=Array.from({length:100},(_,i)=>context.relationGraphRecommendationTone({
+    series_name:'추천 작품 '+i,recommendation_source:'similarity'}));
+  assert.deepEqual([...new Set(tones)].sort(),[0,1,2,3],
+    'recommendation nodes use all four theme tones deterministically');
+  assert.equal(context.relationGraphRecommendationTone({series_name:'Alpha',recommendation_source:'similarity'}),
+    context.relationGraphRecommendationTone({series_name:'Alpha',recommendation_source:'similarity'}),
+    'the same recommendation keeps its tone across renders');
 }
 assert.equal(context.relationGraphNodeRelations({id:'manga',kind:'각색'},[
   {target:'manga',kind:'main_story',label:'본편',showLabel:false},

@@ -9,22 +9,33 @@ from .. import rabbit_plugins as m
 
 
 class OwnedRelationTests(unittest.TestCase):
-    def test_similarity_recommendations_need_an_author_or_two_shared_tags(self):
+    def test_similarity_recommendations_need_an_author_or_two_shared_genre_tag_terms(self):
         provider = object.__new__(m.RabbitPluginsMetadataProvider)
         rows = [
             {'id': 1, 'series_name': '단일 태그만 겹침', 'series_alias': None,
-             'localized_series': '', 'library_id': 1, 'author': '', 'tags': '액션',
+             'localized_series': '', 'library_id': 1, 'author': '', 'genre': '', 'tags': '액션',
              'first_cover': '', 'cover_image': '', 'first_cover_updated_at': None},
             {'id': 2, 'series_name': '두 태그가 겹침', 'series_alias': None,
-             'localized_series': '', 'library_id': 1, 'author': '', 'tags': '액션, 판타지',
+             'localized_series': '', 'library_id': 1, 'author': '', 'genre': '소년', 'tags': '액션, 판타지',
              'first_cover': '', 'cover_image': '', 'first_cover_updated_at': None},
             {'id': 3, 'series_name': '작가가 겹침', 'series_alias': None,
-             'localized_series': '', 'library_id': 1, 'author': '홍길동', 'tags': '',
+             'localized_series': '', 'library_id': 1, 'author': '홍길동', 'genre': '', 'tags': '',
+             'first_cover': '', 'cover_image': '', 'first_cover_updated_at': None},
+            {'id': 4, 'series_name': '장르와 태그가 겹침', 'series_alias': None,
+             'localized_series': '', 'library_id': 1, 'author': '', 'genre': '판타지', 'tags': '액션',
+             'first_cover': '', 'cover_image': '', 'first_cover_updated_at': None},
+            {'id': 5, 'series_name': '제외 태그만 겹침', 'series_alias': None,
+             'localized_series': '', 'library_id': 1, 'author': '', 'genre': '',
+             'tags': '만화 e북, 만화연재, 개인스캔',
+             'first_cover': '', 'cover_image': '', 'first_cover_updated_at': None},
+            {'id': 6, 'series_name': '장르 두 개가 겹침', 'series_alias': None,
+             'localized_series': '', 'library_id': 1, 'author': '', 'genre': '판타지, 소년', 'tags': '',
              'first_cover': '', 'cover_image': '', 'first_cover_updated_at': None},
         ]
         provider._matching_book_rows = lambda *args, **kwargs: rows
         target = {'series_name': '현재 작품', 'series_alias': None,
-                  'author': '홍길동', 'tags': '액션, 판타지'}
+                  'author': '홍길동', 'genre': '판타지, 소년',
+                  'tags': '액션, 판타지, 만화 e북, 만화연재, 개인스캔'}
 
         with patch.object(m, 'session', {'user_id': 1, 'content_rating_max': 18}):
             with patch('services.book_service.get_cover_image_with_t',
@@ -34,7 +45,22 @@ class OwnedRelationTests(unittest.TestCase):
                     include_random_fallback=False, use_cache=False)
 
         self.assertEqual([item['series_name'] for item in result['items']],
-                         ['작가가 겹침', '두 태그가 겹침'])
+                         ['작가가 겹침', '두 태그가 겹침', '장르 두 개가 겹침', '장르와 태그가 겹침'])
+
+    def test_random_fallback_ignores_generic_catalog_tags(self):
+        provider = object.__new__(m.RabbitPluginsMetadataProvider)
+        provider._matching_book_rows = lambda *args, **kwargs: [{
+            'id': 1, 'series_name': '일반 태그만 겹침', 'series_alias': None,
+            'localized_series': '', 'library_id': 1, 'author': '', 'genre': '',
+            'tags': '만화 e북, 만화연재, 개인스캔', 'first_cover': '', 'cover_image': '',
+            'first_cover_updated_at': None,
+        }]
+        target = {'series_name': '현재 작품', 'series_alias': None, 'genre': '',
+                  'tags': '만화 e북, 만화연재, 개인스캔'}
+        with patch('services.book_service.get_cover_image_with_t', side_effect=lambda cover, updated: cover):
+            result = provider._random_genre_tag_recommendations(
+                None, target, '', [], lambda _: True, None, 'general', 10)
+        self.assertEqual(result, [])
 
     def _relations(self, title, native, related_native, localized, relation_field,
                    source_kind='manga', related_kind='manga', target_kind='manga',
