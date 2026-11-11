@@ -9,6 +9,33 @@ from .. import rabbit_plugins as m
 
 
 class OwnedRelationTests(unittest.TestCase):
+    def test_similarity_recommendations_need_an_author_or_two_shared_tags(self):
+        provider = object.__new__(m.RabbitPluginsMetadataProvider)
+        rows = [
+            {'id': 1, 'series_name': '단일 태그만 겹침', 'series_alias': None,
+             'localized_series': '', 'library_id': 1, 'author': '', 'tags': '액션',
+             'first_cover': '', 'cover_image': '', 'first_cover_updated_at': None},
+            {'id': 2, 'series_name': '두 태그가 겹침', 'series_alias': None,
+             'localized_series': '', 'library_id': 1, 'author': '', 'tags': '액션, 판타지',
+             'first_cover': '', 'cover_image': '', 'first_cover_updated_at': None},
+            {'id': 3, 'series_name': '작가가 겹침', 'series_alias': None,
+             'localized_series': '', 'library_id': 1, 'author': '홍길동', 'tags': '',
+             'first_cover': '', 'cover_image': '', 'first_cover_updated_at': None},
+        ]
+        provider._matching_book_rows = lambda *args, **kwargs: rows
+        target = {'series_name': '현재 작품', 'series_alias': None,
+                  'author': '홍길동', 'tags': '액션, 판타지'}
+
+        with patch.object(m, 'session', {'user_id': 1, 'content_rating_max': 18}):
+            with patch('services.book_service.get_cover_image_with_t',
+                       side_effect=lambda cover, updated: cover):
+                result = provider._similar_data(
+                    None, target, '', [], lambda _: True, None, 'general', 10,
+                    include_random_fallback=False, use_cache=False)
+
+        self.assertEqual([item['series_name'] for item in result['items']],
+                         ['작가가 겹침', '두 태그가 겹침'])
+
     def _relations(self, title, native, related_native, localized, relation_field,
                    source_kind='manga', related_kind='manga', target_kind='manga',
                    target_series_name=None, related_library_id=2, related_files=None,
@@ -121,6 +148,29 @@ class OwnedRelationTests(unittest.TestCase):
                                  ['본편'] if explicit_main else [])
                 self.assertEqual([card['series_name'] for card in result['relations']['prequel']], ['직전작'])
                 self.assertEqual(source_queries, [[1]], 'never fetch related source records to infer relations')
+
+    def test_mangabaka_status_is_returned_as_a_display_fallback(self):
+        cases = [('releasing', '연재'), ('completed', '완결'), ('hiatus', '휴재'),
+                 ('cancelled', '연재중단'), ('upcoming', '연재 예정'), ('unknown', '')]
+        for source_status, expected in cases:
+            with self.subTest(source_status=source_status):
+                result = self._relations(
+                    '현재 작품', '現在', '前作', '前作', 'relationships_prequel',
+                    root_fields={'status': source_status})
+                self.assertEqual(result['publication_status_label'], expected)
+
+    def test_source_series_without_status_column_remains_readable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'legacy-series.sqlite'
+            columns = ', '.join(f'{field} TEXT' for field in m.RELATION_FIELDS.values())
+            with sqlite3.connect(path) as db:
+                db.execute(f'CREATE TABLE series (id INTEGER PRIMARY KEY, {columns}, '
+                           'source_manga_updates_response_recommendations TEXT)')
+                db.execute('INSERT INTO series (id) VALUES (1)')
+            provider = object.__new__(m.RabbitPluginsMetadataProvider)
+            provider._series_db_path = lambda: path
+            row = provider._source_series_rows([1])[1]
+            self.assertEqual(row['status'], '')
 
     def test_reverse_relations_accept_explicit_native_alias_with_korean_title(self):
         title = '던전에서 만남을 추구하면 안 되는 걸까'

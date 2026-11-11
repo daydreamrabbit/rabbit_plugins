@@ -108,6 +108,7 @@
   let discoveryRefreshQueued = false;
   let discoveryLoadedKey = '';
   let discoveryRenderedSignature = '';
+  let discoveryStatusLabel = '';
   let loadingCollections = false;
   let noticeTimer;
   let fields = [
@@ -928,10 +929,23 @@
     ]);
     const recommendations = (Array.isArray(data?.recommendations) ? data.recommendations : [])
       .map((item) => discoveryItemKey(item));
-    return JSON.stringify({ relations, recommendations, graph: data?.relation_graph || {} });
+    return JSON.stringify({ relations, recommendations, graph: data?.relation_graph || {},
+      publicationStatus: data?.publication_status_label || '' });
   }
 
   function renderDiscoveryPayload(data) {
+    const previousStatus = String(meta.publication_status_label || '').trim();
+    if (discoveryStatusLabel && previousStatus === discoveryStatusLabel) meta.publication_status_label = '';
+    discoveryStatusLabel = '';
+    const incomingStatus = String(data?.publication_status_label || '').trim();
+    const storedStatus = String(meta.publication_status ?? '').trim();
+    if ((!meta.publication_status_label || meta.publication_status_label === '알 수 없음')
+        && !['0', '1', '2'].includes(storedStatus)
+        && ['연재', '휴재', '연재중단', '완결', '연재 예정'].includes(incomingStatus)) {
+      meta.publication_status_label = incomingStatus;
+      discoveryStatusLabel = incomingStatus;
+    }
+    if (previousStatus !== String(meta.publication_status_label || '').trim()) renderInfo();
     const signature = discoveryPayloadSignature(data);
     if (signature === discoveryRenderedSignature) return false;
     renderRelations(data.relations || {}, data.relation_graph || {});
@@ -2295,8 +2309,19 @@
       const key=String(book.library_id)+':'+String(book.series_name||book.book_id);
       if(seen.has(key))return false;seen.add(key);return true;
     });
-    for(let i=books.length-1;i>0;i--){const j=Math.floor(random()*(i+1));[books[i],books[j]]=[books[j],books[i]];}
-    return books.slice(0,10);
+    const shuffle=items=>{
+      const values=[...items];
+      for(let i=values.length-1;i>0;i--){const j=Math.floor(random()*(i+1));[values[i],values[j]]=[values[j],values[i]];}
+      return values;
+    };
+    const mangaUpdates=books.filter(book=>book.recommendation_source==='manga_updates');
+    const similar=books.filter(book=>book.recommendation_source==='similarity');
+    const byScore=new Map();
+    for(const book of similar){const score=Number(book.score)||0;if(!byScore.has(score))byScore.set(score,[]);byScore.get(score).push(book);}
+    const rankedSimilar=[...byScore.keys()].sort((a,b)=>b-a).flatMap(score=>shuffle(byScore.get(score)));
+    const fallback=books.filter(book=>book.recommendation_source==='genre_tag_fallback');
+    const other=books.filter(book=>!['manga_updates','similarity','genre_tag_fallback'].includes(book.recommendation_source));
+    return [...shuffle(mangaUpdates),...rankedSimilar,...shuffle(fallback),...shuffle(other)].slice(0,10);
   }
 
   function relationGraphDrift(id,time) {

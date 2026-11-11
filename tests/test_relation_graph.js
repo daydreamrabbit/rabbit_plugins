@@ -35,6 +35,19 @@ assert.equal(context.relationGraphUpdateCaption({current:true,captionRecipe:{abo
   assert.equal(sample.length,10);assert.equal(new Set(sample.map(b=>b.series_name)).size,10);
   assert.equal(books[0].series_name,'0','sampling does not mutate response order');
   assert.equal(context.relationGraphRecommendationSample([]).length,0);
+  const prioritized=[...Array.from({length:3},(_,i)=>({library_id:1,series_name:'mu'+i,recommendation_source:'manga_updates'})),
+    ...Array.from({length:12},(_,i)=>({library_id:1,series_name:'similar'+i,recommendation_source:'similarity',score:20-i})),
+    {library_id:1,series_name:'fallback',recommendation_source:'genre_tag_fallback'}];
+  const rankedSample=context.relationGraphRecommendationSample(prioritized,()=>0);
+  assert.equal(rankedSample.length,10);
+  assert.ok(rankedSample.slice(0,3).every(book=>book.recommendation_source==='manga_updates'),
+    'curated MangaUpdates picks remain ahead of library matches');
+  assert.deepEqual(rankedSample.slice(3).map(book=>book.score),[20,19,18,17,16,15,14],
+    'library matches keep their author/tag relevance score order');
+  const broadFallback=context.relationGraphRecommendationSample(Array.from({length:15},(_,i)=>({
+    library_id:1,series_name:'fallback'+i,recommendation_source:'genre_tag_fallback'})),()=>0);
+  assert.equal(broadFallback.length,10);
+  assert.ok(broadFallback.every(book=>book.recommendation_source==='genre_tag_fallback'));
 }
 assert.equal(context.relationGraphNodeRelations({id:'manga',kind:'각색'},[
   {target:'manga',kind:'main_story',label:'본편',showLabel:false},

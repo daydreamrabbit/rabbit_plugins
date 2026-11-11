@@ -63,7 +63,7 @@ from flask import g, has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '5.0.3'
+PLUGIN_VERSION = '5.0.4'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -2075,6 +2075,17 @@ def _recommendation_keys(item):
     if match:
         keys.append(match.group(1).casefold())
     return list(dict.fromkeys(key for key in keys if key))
+
+
+def _series_db_publication_status_label(value):
+    """Translate MangaBaka's authoritative Series.status for display fallback."""
+    return {
+        'cancelled': '연재중단',
+        'completed': '완결',
+        'hiatus': '휴재',
+        'releasing': '연재',
+        'upcoming': '연재 예정',
+    }.get(str(value or '').strip().casefold(), '')
 
 
 def _relation_ids(value):
@@ -7525,9 +7536,10 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=20) as db:
                 db.row_factory = sqlite3.Row
                 columns = {row[1] for row in db.execute('PRAGMA table_info(Series)')}
+                status_field = 'status' if 'status' in columns else "'' AS status"
                 v2_field = ('relationships_v2' if 'romanized_title' in columns
                             else 'NULL AS relationships_v2')
-                query = 'SELECT id, ' + ', '.join(fields + [v2_field]) + ' FROM series WHERE id IN (' + ','.join('?' for _ in ids) + ')'
+                query = 'SELECT id, ' + ', '.join(fields + [status_field, v2_field]) + ' FROM series WHERE id IN (' + ','.join('?' for _ in ids) + ')'
                 return {row['id']: dict(row) for row in db.execute(query, ids)}
         except (OSError, sqlite3.Error):
             return {}
@@ -7854,7 +7866,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 item = local_item(series)
                 key = work_key(item) if item else None
                 if item and key not in related_keys and key not in seen:
-                    recommended.append(item)
+                    recommended.append(dict(item, recommendation_source='manga_updates'))
                     seen.add(key)
                     break
 
@@ -7864,7 +7876,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         for item in similar:
             key = work_key(item)
             if key not in related_keys and key not in seen:
-                recommended.append(item)
+                recommended.append(dict(item, recommendation_source='similarity'))
                 seen.add(key)
                 if len(recommended) >= limit:
                     break
@@ -7872,7 +7884,12 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             recommended = self._random_genre_tag_recommendations(
                 gateway, target, permission, libraries, visible, check_rating, db_type, limit,
                 excluded=related_keys)
-        return {'success': True, 'relations': relations, 'recommendations': recommended[:limit], **graph_result}
+        status_labels = [_series_db_publication_status_label(row.get('status'))
+                         for row in source_rows.values()]
+        publication_status_label = (status_labels[0] if status_labels and status_labels[0]
+                                    and all(label == status_labels[0] for label in status_labels) else '')
+        return {'success': True, 'relations': relations, 'recommendations': recommended[:limit],
+                'publication_status_label': publication_status_label, **graph_result}
 
     def _matching_book_rows(self, gateway, target, permission, libraries, groups, random_order=False):
         condition, values = _term_filter(groups)
@@ -7922,7 +7939,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 'display_name': re.sub(r'\s*\[[^\[\]]+\]\s*$', '',
                                        row['series_alias'] or row['series_name']).strip(),
                 'localized_series': row['localized_series'], 'library_id': row['library_id'],
-                'author': row['author'], 'cover': get_cover_image_with_t(
+                'author': row['author'], 'recommendation_source': 'genre_tag_fallback', 'cover': get_cover_image_with_t(
                     row['first_cover'] or row['cover_image'], row.get('first_cover_updated_at')),
             }
             key = (_series_title_key(item['series_name']), item['library_id'])
@@ -7964,7 +7981,9 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             if not visible(row):
                 continue
             score = 6 * len(groups['author'] & tokens(row['author'])) + len(groups['tags'] & tokens(row['tags']))
-            if not score or _series_title_key(row['series_name']) in target_names:
+            # One shared tag is too weak to act as a recommendation by itself.
+            # Keep candidates only when they share an author or at least two tags.
+            if score < 2 or _series_title_key(row['series_name']) in target_names:
                 continue
             key = (_series_title_key(row['series_name']), row['library_id'])
             item = {
@@ -7972,8 +7991,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 'display_name': re.sub(r'\s*\[[^\[\]]+\]\s*$', '',
                                        row['series_alias'] or row['series_name']).strip(),
                 'localized_series': row['localized_series'], 'library_id': row['library_id'],
-                'author': row['author'], 'cover': get_cover_image_with_t(
-                    row['first_cover'] or row['cover_image'], row.get('first_cover_updated_at')), 'score': score,
+                'author': row['author'], 'recommendation_source': 'similarity', 'score': score, 'cover': get_cover_image_with_t(
+                    row['first_cover'] or row['cover_image'], row.get('first_cover_updated_at')),
             }
             if key not in ranked or score > ranked[key]['score']:
                 ranked[key] = item
