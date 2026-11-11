@@ -1540,7 +1540,7 @@
       } else {
         const holdings = meta.holdings_coverage || {};
         const volumeStatus = holdings.holdings_status === 'missing' && holdings.holdings_label
-          ? holdings.holdings_label : (hasExplicitStatus ? explicitStatus : '알 수 없음');
+          ? holdings.holdings_label : (hasExplicitStatus ? explicitStatus : status);
         rows.push(['연재상태', pureVolumes && !standalone ? volumeStatus : status]);
         rows.push(['연재시작일', meta.publication_dates?.start || '—']);
         rows.push(['연재종료일', meta.publication_dates?.end || '—']);
