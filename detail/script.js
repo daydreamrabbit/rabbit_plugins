@@ -3531,10 +3531,22 @@
       button.append(art,n.titleElement,n.kindElement);
       n.element = button; layer.append(button);
       button.addEventListener('dragstart', event => event.preventDefault());
-      button.addEventListener('pointerenter', event => { if (event.pointerType !== 'touch') { highlighted = n.id; showPreview(n); } });
-      button.addEventListener('pointerleave', () => { if (!drag) highlighted = null; hidePreview(); });
-      button.addEventListener('focus', () => { highlighted = n.id; showPreview(n); });
-      button.addEventListener('blur', () => { if (!drag) highlighted = null; hidePreview(); });
+      art.addEventListener('pointerenter', event => {
+        if (event.pointerType === 'touch') return;
+        button.classList.add('is-cover-hovered');
+        highlighted = n.id; showPreview(n);
+      });
+      art.addEventListener('pointerleave', () => {
+        button.classList.remove('is-cover-hovered');
+        if (!drag && !button.matches(':focus-visible')) { highlighted = null; hidePreview(); }
+      });
+      button.addEventListener('focus', () => {
+        if (!button.matches(':focus-visible')) return;
+        highlighted = n.id; showPreview(n);
+      });
+      button.addEventListener('blur', () => {
+        if (!drag && !art.matches(':hover')) { highlighted = null; hidePreview(); }
+      });
       button.addEventListener('keydown', event => { if (event.key === 'Escape') hidePreview(); });
       button.addEventListener('pointerdown', event => {
         if (!graph || event.button !== 0) return;

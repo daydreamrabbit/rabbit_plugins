@@ -501,8 +501,8 @@
 .ds-relation-node[data-current="true"] .ds-relation-node-art { width: 60px; height: 60px; box-shadow: 0 0 0 2px var(--graph-tone); }
 .ds .ds-relation-node:focus-visible { outline: none; }
 .ds .ds-relation-node:focus-visible .ds-relation-node-art { outline: 2px solid var(--graph-tone); outline-offset: 4px; }
-.ds .ds-relation-node:is(:hover, :focus-visible, .is-dragging) { z-index: 6; }
-.ds-relation-node:is(:hover, :focus-visible) .ds-relation-node-art { transform: scale(1.14); box-shadow: 0 0 0 5px color-mix(in srgb, var(--graph-tone) 28%, transparent), 0 5px 18px color-mix(in srgb, var(--graph-tone) 26%, transparent); }
+.ds .ds-relation-node:is(.is-cover-hovered, :focus-visible, .is-dragging) { z-index: 6; }
+.ds-relation-node:is(.is-cover-hovered, :focus-visible) .ds-relation-node-art { transform: scale(1.14); box-shadow: 0 0 0 5px color-mix(in srgb, var(--graph-tone) 28%, transparent), 0 5px 18px color-mix(in srgb, var(--graph-tone) 26%, transparent); }
 .ds-relation-node-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; width: 100%; margin-top: 8px; font-size: 11px; overflow-wrap: anywhere; }
 .ds-relation-node-kind { display: block; margin-top: 3px; color: var(--ds-muted); font-size: 11px; }
 .ds-relation-node[data-current="true"] .ds-relation-node-kind { margin-top: 8px; padding: 3px 8px; border: 1px solid color-mix(in srgb, var(--graph-tone) 55%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--ds-panel) 85%, transparent); color: var(--ds-text); }
