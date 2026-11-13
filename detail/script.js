@@ -1527,9 +1527,12 @@
         const holdings = meta.holdings_coverage || {};
         const volumeStatus = holdings.holdings_status === 'missing' && holdings.holdings_label
           ? holdings.holdings_label : (hasExplicitStatus ? explicitStatus : status);
-        rows.push(['연재상태', pureVolumes && !standalone ? volumeStatus : status]);
+        const displayedStatus = pureVolumes && !standalone ? volumeStatus : status;
+        rows.push(['연재상태', displayedStatus]);
         rows.push(['연재시작일', meta.publication_dates?.start || '—']);
-        rows.push(['연재종료일', meta.publication_dates?.end || '—']);
+        if (displayedStatus !== '연재' && status !== '연재' && explicitStatus !== '연재') {
+          rows.push(['연재종료일', meta.publication_dates?.end || '—']);
+        }
       }
       rows.push(['연령등급', ageRating?.label || '—']);
     }

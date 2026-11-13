@@ -63,7 +63,7 @@ from flask import g, has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '5.1.0'
+PLUGIN_VERSION = '5.1.1'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -7612,26 +7612,40 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         try:
             with sqlite3.connect(index_path.as_uri() + '?mode=ro', uri=True) as db:
                 db.row_factory = sqlite3.Row
-                source_matches = {}
+                native_matches = {}
+                title_matches = {}
                 localized_key = _title_key(target.get('localized_series'))
                 if localized_key:
                     rows = db.execute(
                         'SELECT s.id, s.series_type, s.native_title, s.native_key, s.ko_titles, s.manga_updates_id, s.native_titles '
                         'FROM series_native_title_lookup n JOIN series_lookup s ON s.id = n.series_id '
                         'WHERE n.title_key = ?', (localized_key,))
-                    source_matches.update((row['id'], dict(row)) for row in rows)
+                    native_matches.update((row['id'], dict(row)) for row in rows)
                 if local_title_keys:
                     placeholders = ','.join('?' for _ in local_title_keys)
                     rows = db.execute(
                         'SELECT DISTINCT s.id, s.series_type, s.native_title, s.native_key, s.ko_titles, s.manga_updates_id, s.native_titles '
                         'FROM series_title_lookup t JOIN series_lookup s ON s.id = t.series_id '
                         'WHERE t.title_key IN (' + placeholders + ')', tuple(local_title_keys))
-                    source_matches.update((row['id'], dict(row)) for row in rows)
-                source_matches = [row for row in source_matches.values() if
-                    _series_type_matches_library(row['series_type'], target.get('content_kind')) and (
-                        (localized_key and localized_key in {_title_key(title) for title in _series_native_titles(row)}) or any(
-                            _series_title_key(title) in local_title_keys
-                            for title in json.loads(row['ko_titles'] or '[]')))]
+                    title_matches.update((row['id'], dict(row)) for row in rows)
+
+                # A shared native title can identify both a novel and its
+                # adaptation. Prefer the source row matched by the local
+                # Korean title; unioning native-title matches imports the
+                # other work's direct relations and can mislabel it as an
+                # alternative edition.
+                matched_by_title = []
+                for row in title_matches.values():
+                    if _series_type_matches_library(row['series_type'], target.get('content_kind')):
+                        matched_by_title.append(row)
+                native_title_matches = [row for row in native_matches.values()
+                    if _series_type_matches_library(row['series_type'], target.get('content_kind'))
+                    and localized_key
+                    and localized_key in {_title_key(title) for title in _series_native_titles(row)}]
+                exact_native_title_matches = [row for row in matched_by_title
+                    if localized_key
+                    and localized_key in {_title_key(title) for title in _series_native_titles(row)}]
+                source_matches = exact_native_title_matches or matched_by_title or native_title_matches
         except (OSError, sqlite3.Error, ValueError, TypeError):
             source_matches = []
         if not source_matches:
