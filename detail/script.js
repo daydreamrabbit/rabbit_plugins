@@ -108,7 +108,6 @@
   let discoveryRefreshQueued = false;
   let discoveryLoadedKey = '';
   let discoveryRenderedSignature = '';
-  let discoveryStatusLabel = '';
   let loadingCollections = false;
   let noticeTimer;
   let fields = [
@@ -929,23 +928,10 @@
     ]);
     const recommendations = (Array.isArray(data?.recommendations) ? data.recommendations : [])
       .map((item) => discoveryItemKey(item));
-    return JSON.stringify({ relations, recommendations, graph: data?.relation_graph || {},
-      publicationStatus: data?.publication_status_label || '' });
+    return JSON.stringify({ relations, recommendations, graph: data?.relation_graph || {} });
   }
 
   function renderDiscoveryPayload(data) {
-    const previousStatus = String(meta.publication_status_label || '').trim();
-    if (discoveryStatusLabel && previousStatus === discoveryStatusLabel) meta.publication_status_label = '';
-    discoveryStatusLabel = '';
-    const incomingStatus = String(data?.publication_status_label || '').trim();
-    const storedStatus = String(meta.publication_status ?? '').trim();
-    if ((!meta.publication_status_label || meta.publication_status_label === '알 수 없음')
-        && !['0', '1', '2'].includes(storedStatus)
-        && ['연재', '휴재', '연재중단', '완결', '연재 예정'].includes(incomingStatus)) {
-      meta.publication_status_label = incomingStatus;
-      discoveryStatusLabel = incomingStatus;
-    }
-    if (previousStatus !== String(meta.publication_status_label || '').trim()) renderInfo();
     const signature = discoveryPayloadSignature(data);
     if (signature === discoveryRenderedSignature) return false;
     renderRelations(data.relations || {}, data.relation_graph || {});

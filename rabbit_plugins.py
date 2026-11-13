@@ -63,7 +63,7 @@ from flask import g, has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '5.0.10'
+PLUGIN_VERSION = '5.1.0'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -2085,17 +2085,6 @@ def _recommendation_keys(item):
     if match:
         keys.append(match.group(1).casefold())
     return list(dict.fromkeys(key for key in keys if key))
-
-
-def _series_db_publication_status_label(value):
-    """Translate MangaBaka's authoritative Series.status for display fallback."""
-    return {
-        'cancelled': '연재중단',
-        'completed': '완결',
-        'hiatus': '휴재',
-        'releasing': '연재',
-        'upcoming': '연재 예정',
-    }.get(str(value or '').strip().casefold(), '')
 
 
 def _relation_ids(value):
@@ -7896,12 +7885,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             recommended = self._random_genre_tag_recommendations(
                 gateway, target, permission, libraries, visible, check_rating, db_type, limit,
                 excluded=related_keys)
-        status_labels = [_series_db_publication_status_label(row.get('status'))
-                         for row in source_rows.values()]
-        publication_status_label = (status_labels[0] if status_labels and status_labels[0]
-                                    and all(label == status_labels[0] for label in status_labels) else '')
         return {'success': True, 'relations': relations, 'recommendations': recommended[:limit],
-                'publication_status_label': publication_status_label, **graph_result}
+                **graph_result}
 
     def _matching_book_rows(self, gateway, target, permission, libraries, groups, random_order=False):
         condition, values = _term_filter(groups)
