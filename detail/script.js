@@ -2520,7 +2520,9 @@
         let blocked=0;
         const ownLabel=a.captionAbove?{x:a.x,y:a.y+(a.captionTop||-96)+32,labelWidth:a.labelWidth||112,boxHeight:Math.max(1,-48-(a.captionTop||-96))}
           :{x:a.x+(a.captionOffset||0),y:a.y+64,labelWidth:a.labelWidth||112,boxHeight:Math.max(1,(a.boxHeight||104)-64)};
-        const obstacles=[...(link.obstacles||[]),...(a.current?[]:[ownLabel])];
+        const obstacles=[];
+        for(const n of link.obstacles||[])if(n.id!==a.id && n.id!==b.id)obstacles.push(n);
+        if(!a.current)obstacles.push(ownLabel);
         for(const n of obstacles)for(let k=1;k<20;k++) {
           const v=samples[k-1];
           if(v.x>n.x-n.labelWidth/2-6 && v.x<n.x+n.labelWidth/2+6 && v.y>n.y-32 && v.y<n.y-24+n.boxHeight+6){blocked++;break;}
@@ -2613,7 +2615,12 @@
     const titleClearance=Math.max(0,1-Math.abs(dx)/distance*2.5);
     const curvature=link.adjacency ? Math.min(.25,progress*progress*(3-2*progress))
       :Math.max(progress*progress*(3-2*progress),titleClearance);
-    const relevant=(link.obstacles||[]).filter(n=>n.x>=Math.min(a.x,b.x)-120 && n.x<=Math.max(a.x,b.x)+120 && n.y>=Math.min(a.y,b.y)-120 && n.y<=Math.max(a.y,b.y)+120);
+    const relevant=[];
+    for(const n of link.obstacles||[]) {
+      if(n.id===a.id || n.id===b.id)continue;
+      if(n.x>=Math.min(a.x,b.x)-120 && n.x<=Math.max(a.x,b.x)+120
+          && n.y>=Math.min(a.y,b.y)-120 && n.y<=Math.max(a.y,b.y)+120)relevant.push(n);
+    }
     const geometry=[a,b,...relevant];
     const unchanged=state.routingGeometry?.length===geometry.length && geometry.every((p,i)=>{
       const old=state.routingGeometry[i];
@@ -2623,7 +2630,10 @@
     const cached=unchanged && state.sourcePort!==undefined && state.targetPort!==undefined;
     const labelBox=n=>n.captionAbove?{x:n.x,y:n.y+(n.captionTop||-96)+32,labelWidth:n.labelWidth||112,boxHeight:Math.max(1,-40-(n.captionTop||-96)-8)}
       :{x:n.x+(n.captionOffset||0),y:n.y+64,labelWidth:n.labelWidth||112,boxHeight:Math.max(1,(n.boxHeight||104)-64)};
-    const obstacles=[...(link.obstacles||[]),...[a,b].filter(n=>!n.current).map(labelBox)];
+    const obstacles=[];
+    for(const n of link.obstacles||[])if(n.id!==a.id && n.id!==b.id)obstacles.push(n);
+    if(!a.current)obstacles.push(labelBox(a));
+    if(!b.current)obstacles.push(labelBox(b));
     const sx=a.x+dx/distance*ra,sy=a.y+dy/distance*ra,ex=b.x-dx/distance*rb,ey=b.y-dy/distance*rb;
     // A shallow arc softens the cable without retaining large bends at close range.
     if(state.bowSign===undefined)state.bowSign=a.current && dx>Math.abs(dy)*.3?-1:1;
@@ -2705,11 +2715,14 @@
         if(link.limits && (Math.abs(v.x)>link.limits.width/2-5 || Math.abs(v.y)>link.limits.height/2-5))outside++;
         if(group && (Math.abs(v.x-group.x)>group.groupWidth/2-6 || Math.abs(v.y-group.y)>group.groupHeight/2-6))outside++;
       }
-      for(const spoke of link.spokes||[])for(let k=0;k<24;k++) {
+      for(const spoke of link.spokes||[]) {
+        if(spoke.b.id===a.id || spoke.b.id===b.id)continue;
+        for(let k=0;k<24;k++) {
         const u=samples[k],v=samples[k+1],rx=v.x-u.x,ry=v.y-u.y,sx=spoke.b.x-spoke.a.x,sy=spoke.b.y-spoke.a.y,den=rx*sy-ry*sx;
         if(Math.abs(den)<.00001)continue;
         const px=spoke.a.x-u.x,py=spoke.a.y-u.y,t=(px*sy-py*sx)/den,w=(px*ry-py*rx)/den;
         if(t>0 && t<1 && w>.05 && w<.95){crossings++;break;}
+        }
       }
       // Separate cables meeting the same cover instead of merging their tails.
       const fanPenalty=(origin,destination,port)=>{
@@ -2792,9 +2805,12 @@
         for(const bend of choices) {
           const tx=(sx+ex)/2-dy/len*bend,ty=(sy+ey)/2+dx/len*bend;
           let hits=0;
-          for(const n of link.obstacles)for(let i=1;i<24;i++) {
+          for(const n of link.obstacles) {
+            if(n.id===a.id || n.id===b.id)continue;
+            for(let i=1;i<24;i++) {
             const t=i/24,x=(1-t)**2*sx+2*(1-t)*t*tx+t*t*ex,y=(1-t)**2*sy+2*(1-t)*t*ty+t*t*ey;
             if(x>n.x-n.labelWidth/2-8 && x<n.x+n.labelWidth/2+8 && y>n.y-34 && y<n.y-24+n.boxHeight+8){hits++;break;}
+            }
           }
           let outside=0;
           if(link.limits)for(let i=1;i<24;i++){
@@ -3260,7 +3276,10 @@
     let previewNode = null, previewWidth = 270, previewHeight = 180;
     let graph = null, dead = false, resize = null, visibility = null, drag = null;
     let width = 0, height = 0, availableWidth=0,displayScale=1, layout = null, lineColor = '', accentColor = '', suppressClick = false;
-    let highlighted = null, stageVisible = true, labelBounds = [], graphFont = '';
+    let highlighted = null, stageVisible = true, labelBounds = [], frameLabelObstacles = [], graphFont = '';
+    let frameShownNodes=[],frameBookNodes=[],frameBookSpokes=[],frameHighlightedNode=null;
+    const frameShownById=new Map();
+    const frameAdjacentNodesById=new Map();
     let softLinks=[],settleFrames=0,quietFrames=0,releasedSpring=null,settleAnchor=null,settleUntil=0;
     const relationRoutes=new Map(),renderedCables=new Map();let edgeFrame=0;
     const motionEpoch=performance.now()/1000;
@@ -3278,6 +3297,7 @@
     }
     // Relationship captions travel with their target books, never the cable.
     const linkLabels = links.map(() => null);
+    const linkLabelByEdge = new Map(links.map((link,index)=>[link,linkLabels[index]]));
     const controller = { destroy() {
       if (dead) return; dead = true; resize?.disconnect(); visibility?.disconnect();
       themeObserver.disconnect(); detachObserver.disconnect();
@@ -3288,6 +3308,13 @@
     relationGraph = controller;
     function wakeSoftBody(){settleFrames=240;quietFrames=0;settleUntil=performance.now()+2600;}
     function shown(n) {return n.group?n:{...n,x:n.x+(n.floatX||0),y:n.y+(n.floatY||0)};}
+    function relationGraphLabelObstacles(frameNodes=nodes.map(shown)) {
+      return frameNodes.flatMap(n=>n.group?[{
+        left:n.x-80,right:n.x+80,top:n.y-n.groupHeight/2+8,bottom:n.y-n.groupHeight/2+58
+      }]:[{left:n.x-(n.current?44:38),right:n.x+(n.current?44:38),top:n.y-(n.current?44:38),bottom:n.y+(n.current?44:38)},
+        {left:n.x+(n.captionOffset||0)-n.labelWidth/2,right:n.x+(n.captionOffset||0)+n.labelWidth/2,
+          top:n.y+(n.captionAbove?n.captionTop:32),bottom:n.captionAbove?n.y-38:n.y-(n.current?30:24)+n.boxHeight+4}]);
+    }
     function positionPreview() {
       if (!previewNode || preview.hidden) return;
       const target=shown(previewNode);
@@ -3609,30 +3636,49 @@
         .enableNodeDrag(false).enableZoomInteraction(false).enablePanInteraction(false)
         .linkCanvasObjectMode(() => 'replace').linkCanvasObject((l, c) => {
           if (typeof l.source !== 'object') return;
-          const a = shown(l.source), b = shown(l.target), dx = b.x - a.x, dy = b.y - a.y;
-          const group = l.groupId ? nodes.find(n => n.id === l.groupId) : null;
+          const a = frameShownById.get(l.source.id)||shown(l.source), b = frameShownById.get(l.target.id)||shown(l.target), dx = b.x - a.x, dy = b.y - a.y;
+          const group = l.groupId ? frameShownById.get(l.groupId)||null : null;
           if(l.kind && !relationRoutes.has(l.pairKey))relationRoutes.set(l.pairKey,{});
           const routing = b.group ? {...l,state:l,idle:!drag && settleFrames===0,
-              neighbours:nodes.filter(n=>(adjacency[a.id]||[]).includes(n.id)).map(shown),
+              neighbours:frameAdjacentNodesById.get(a.id)||[],
               obstacles:nodes.filter(n=>!n.group && n.id!==a.id && n.groupId!==b.id).map(shown)}
             : l.kind ? {...l,state:relationRoutes.get(l.pairKey),frame:edgeFrame,idle:!drag && settleFrames===0,limits:{width,height},
-              adjacency,neighbours:nodes.filter(n=>!n.group).map(shown),
-              spokes:nodes.filter(n=>!n.group && !n.groupId && !n.current && n.id!==a.id && n.id!==b.id).map(n=>({a:shown(nodes[0]),b:shown(n)})),
-              obstacles:nodes.filter(n=>!n.group && n.id!==a.id && n.id!==b.id).map(shown)} : l.spoke ? {
-                ...l,state:l,limits:{width,height},idle:!drag && settleFrames===0,adjacency,neighbours:nodes.filter(n=>!n.group).map(shown),
-                obstacles:nodes.filter(n=>!n.group && n.id!==a.id && n.id!==b.id).map(shown)
+              adjacency,neighbours:frameBookNodes,spokes:frameBookSpokes,obstacles:frameBookNodes} : l.spoke ? {
+                ...l,state:l,limits:{width,height},idle:!drag && settleFrames===0,adjacency,neighbours:frameBookNodes,
+                obstacles:frameBookNodes
               } : l;
           const cableKey=l.pairKey||[a.id,b.id].sort().join(':');
-          routing.cables=[...renderedCables].filter(([key])=>key!==cableKey).map(([,cable])=>({
-            samples:cable.samples,shared:[a,b].filter(n=>cable.ids.includes(n.id)),anchors:cable.ids.map((id,i)=>({id,point:cable.samples[i?32:0]}))
-          }));
+          routing.cables=[];
+          const routePadding=176;
+          const routeBounds={
+            left:Math.min(a.x,b.x)-routePadding,right:Math.max(a.x,b.x)+routePadding,
+            top:Math.min(a.y,b.y)-routePadding,bottom:Math.max(a.y,b.y)+routePadding,
+          };
+          for(const [key,cable] of renderedCables) {
+            if(key===cableKey)continue;
+            const bounds=cable.bounds;
+            if(bounds && (bounds.right<routeBounds.left || bounds.left>routeBounds.right
+              || bounds.bottom<routeBounds.top || bounds.top>routeBounds.bottom))continue;
+            routing.cables.push({samples:cable.samples,
+              shared:[a,b].filter(n=>cable.ids.includes(n.id)),
+              anchors:cable.ids.map((id,i)=>({id,point:cable.samples[i?32:0]}))});
+          }
           const curve=relationGraphCurve(a,b,group,routing);
-          if(!b.group && !(l.pairIndex>0))renderedCables.set(cableKey,{ids:[a.id,b.id],samples:Array.from({length:33},(_,i)=>curve.point(i/32))});
+          if(!b.group && !(l.pairIndex>0)) {
+            const samples=Array.from({length:33},(_,i)=>curve.point(i/32));
+            const bounds={left:Infinity,right:-Infinity,top:Infinity,bottom:-Infinity};
+            for(const p of samples) {
+              bounds.left=Math.min(bounds.left,p.x);bounds.right=Math.max(bounds.right,p.x);
+              bounds.top=Math.min(bounds.top,p.y);bounds.bottom=Math.max(bounds.bottom,p.y);
+            }
+            renderedCables.set(cableKey,{ids:[a.id,b.id],samples,bounds});
+          }
           const { sx, sy, ex, ey, cx, cy, c1, c2, ra, rb, len, point, points } = curve;
-          const label = linkLabels[links.indexOf(l)];
+          const label = linkLabelByEdge.get(l)||null;
           if (label) label.hidden = len <= ra + rb;
           if (len <= ra + rb) return;
-          const active = nodes.find(n => n.id === highlighted);
+          const arrowMark=(l.kind || label)?relationGraphEndMark(curve,0):null;
+          const active = frameHighlightedNode;
           const hot = highlighted === a.id || highlighted === b.id
             || (active?.groupId && (active.groupId === l.groupId || active.groupId === b.id));
           const relationColor = b.inkColor || accentColor;
@@ -3650,25 +3696,28 @@
             const description=l.labelRoles?l.labelRoles.map(item=>item.role+': '+item.title).join(' / '):a.label+' → '+b.label+' · '+l.label;
             if(label.getAttribute('aria-label')!==description){label.removeAttribute('aria-hidden');label.setAttribute('aria-label',description);}
             const labelWidth=label.offsetWidth,labelHeight=label.offsetHeight;
-            const preferredDistance=relationGraphEndMark(curve,0).total*.5;
+            const preferredDistance=arrowMark.total*.5;
             const mark=relationGraphEndMark(curve,preferredDistance);
             const preferred=(l.labelRoles?0:l.pairSize>1?14:0)+(l.targetSlot||0)*22;
             const clearance=Math.abs(mark.tx)*labelHeight/2+Math.abs(mark.ty)*labelWidth/2+8;
             const offsets=[preferred,-preferred,clearance,-clearance,clearance+12,-clearance-12,
               ...(l.labelRoles?[clearance+28,-clearance-28,clearance+44,-clearance-44]:[])];
-            const obstacles=nodes.map(shown).flatMap(n=>n.group?[{
-              left:n.x-80,right:n.x+80,top:n.y-n.groupHeight/2+8,bottom:n.y-n.groupHeight/2+58
-            }]:[{left:n.x-(n.current?44:38),right:n.x+(n.current?44:38),top:n.y-(n.current?44:38),bottom:n.y+(n.current?44:38)},
-              {left:n.x+(n.captionOffset||0)-n.labelWidth/2,right:n.x+(n.captionOffset||0)+n.labelWidth/2,top:n.y+(n.captionAbove?n.captionTop:32),bottom:n.captionAbove?n.y-38:n.y-(n.current?30:24)+n.boxHeight+4}]);
-            const arrow=relationGraphEndMark(curve,0);
-            obstacles.push({left:arrow.x-6,right:arrow.x+6,top:arrow.y-6,bottom:arrow.y+6});
+            const arrowObstacle={left:arrowMark.x-6,right:arrowMark.x+6,top:arrowMark.y-6,bottom:arrowMark.y+6};
             let position={x:mark.x,y:mark.y},chosenBox,best=Infinity,side=preferred;
-            for(const distance of [preferredDistance,preferredDistance-22,preferredDistance+22,preferredDistance-44,preferredDistance+44,
-              ...(l.labelRoles?[preferredDistance*.5,preferredDistance*1.3]:[])])for(const offset of offsets) {
-              const anchor=relationGraphEndMark(curve,distance);
+            const distances=[preferredDistance,preferredDistance-22,preferredDistance+22,preferredDistance-44,preferredDistance+44,
+              ...(l.labelRoles?[preferredDistance*.5,preferredDistance*1.3]:[])];
+            const anchors=distances.map(distance=>relationGraphEndMark(curve,distance));
+            for(let distanceIndex=0;distanceIndex<distances.length;distanceIndex++)for(const offset of offsets) {
+              const distance=distances[distanceIndex],anchor=anchors[distanceIndex];
               const p={x:anchor.x-anchor.ty*offset,y:anchor.y+anchor.tx*offset};
               const box={left:p.x-labelWidth/2,right:p.x+labelWidth/2,top:p.y-labelHeight/2,bottom:p.y+labelHeight/2};
-              const conflicts=[...obstacles,...labelBounds].reduce((sum,o)=>sum+Math.max(0,Math.min(box.right,o.right+3)-Math.max(box.left,o.left-3))*Math.max(0,Math.min(box.bottom,o.bottom+3)-Math.max(box.top,o.top-3)),0);
+              let conflicts=0;
+              for(const o of frameLabelObstacles)conflicts+=Math.max(0,Math.min(box.right,o.right+3)-Math.max(box.left,o.left-3))
+                *Math.max(0,Math.min(box.bottom,o.bottom+3)-Math.max(box.top,o.top-3));
+              for(const o of labelBounds)conflicts+=Math.max(0,Math.min(box.right,o.right+3)-Math.max(box.left,o.left-3))
+                *Math.max(0,Math.min(box.bottom,o.bottom+3)-Math.max(box.top,o.top-3));
+              conflicts+=Math.max(0,Math.min(box.right,arrowObstacle.right+3)-Math.max(box.left,arrowObstacle.left-3))
+                *Math.max(0,Math.min(box.bottom,arrowObstacle.bottom+3)-Math.max(box.top,arrowObstacle.top-3));
               const outside=box.left < -width/2+3 || box.right > width/2-3 || box.top < -height/2+3 || box.bottom > height/2-3;
               const beyondGroup=group && (box.left<group.x-group.groupWidth/2+4 || box.right>group.x+group.groupWidth/2-4 || box.top<group.y-group.groupHeight/2+4 || box.bottom>group.y+group.groupHeight/2-4);
               const score=conflicts*10+Math.abs(offset-preferred)+Math.abs(distance-preferredDistance)*.3+(outside?100000:0)+(beyondGroup?10000:0);
@@ -3679,8 +3728,8 @@
             label.style.transform=`translate(${screen.x}px, ${screen.y}px) translate(-50%, -50%)`;
           }
           if (l.kind) {
-            const arrow = relationGraphEndMark(curve,0),angle=Math.atan2(arrow.ty,arrow.tx);
-            c.save(); c.translate(arrow.x, arrow.y); c.rotate(angle); c.beginPath(); c.moveTo(-5, -3); c.lineTo(0, 0); c.lineTo(-5, 3);
+            const angle=Math.atan2(arrowMark.ty,arrowMark.tx);
+            c.save(); c.translate(arrowMark.x, arrowMark.y); c.rotate(angle); c.beginPath(); c.moveTo(-5, -3); c.lineTo(0, 0); c.lineTo(-5, 3);
             c.strokeStyle = relationColor; c.globalAlpha = 1; c.lineWidth = 1.8; c.stroke(); c.restore();
           }
           if (!reducedMotion && !(l.pairIndex>0)) {
@@ -3722,6 +3771,18 @@
             const drift=relationGraphDrift(n.id,time);
             n.floatX=drift.x*n.floatStrength;n.floatY=drift.y*n.floatStrength;
           }
+          frameShownNodes=nodes.map(shown);
+          frameShownById.clear();
+          for(const n of frameShownNodes)frameShownById.set(n.id,n);
+          frameBookNodes=frameShownNodes.filter(n=>!n.group);
+          frameAdjacentNodesById.clear();
+          for(const n of frameBookNodes)frameAdjacentNodesById.set(n.id,
+            (adjacency[n.id]||[]).map(id=>frameShownById.get(id)).filter(Boolean));
+          const spokeOrigin=frameShownNodes[0];
+          frameBookSpokes=frameBookNodes.filter(n=>!n.groupId && !n.current)
+            .map(n=>({a:spokeOrigin,b:n}));
+          frameHighlightedNode=frameShownById.get(highlighted)||null;
+          frameLabelObstacles=relationGraphLabelObstacles(frameShownNodes);
         })
         .onRenderFramePost(() => {
           if (!root.isConnected) { controller.destroy(); return; }
