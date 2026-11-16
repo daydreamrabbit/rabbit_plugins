@@ -664,7 +664,11 @@
     const label = String(rating?.label || '').trim();
     const compact = label.toLocaleLowerCase().replace(/[\s_-]+/g, '');
     if (/포르노|porn|adultonly18/.test(compact)) return { kind: 'porn', label: '포르노' };
-    if (/성인망가|r18|x18|xrated|청소년관람불가/.test(compact)) return { kind: 'manga', label: '성인망가' };
+    if (/성인망가|r18|x18|xrated|청소년관람불가/.test(compact)) {
+      const kind = String(contentKind || '').trim().toLocaleLowerCase();
+      const lightNovel = ['novel', '라노벨', '라이트노벨'].includes(kind);
+      return { kind: 'manga', label: lightNovel ? '성인라노벨' : '성인망가' };
+    }
     if (/15세|15\+|ma15|m15|청소년/.test(compact) || Number(rating?.level) === 15) {
       return { kind: 'teen', label: '15세 이용가' };
     }
