@@ -116,6 +116,7 @@
     ['cover_artist', '그림작가'],
     ['translator', '번역가'],
     ['publisher', '출판사'],
+    ['publication_status', '연재상태'],
     ['publication_start_date', '연재시작일'],
     ['publication_end_date', '연재종료일'],
     ['manual_chapter_count', '회차 수'],
@@ -651,7 +652,18 @@
         });
       }
     };
-    [meta, ...books, ...extraRows].forEach(add);
+    const sources = [meta, ...books, ...extraRows];
+    sources.forEach(add);
+    const genreTokens = sources.flatMap((source) => String(source?.genre || '').split(','))
+      .map((token) => token.trim().toLocaleLowerCase().replace(/\s+/g, ''))
+      .filter(Boolean);
+    const kind = String(contentKind || '').trim().toLocaleLowerCase().replace(/\s+/g, '');
+    const lightNovel = ['novel', '라노벨', '라이트노벨'].includes(kind)
+      || genreTokens.some((token) => token.endsWith('라이트노벨') || token.endsWith('라노벨') || token.includes('lightnovel'));
+    const adultGenre = genreTokens.some((token) => ['성인', 'adult', 'adultonly', 'r18', 'r18+'].includes(token));
+    if (lightNovel && adultGenre) {
+      candidates.push({ level: 19, rank: 3, label: 'R18+', specific: true, raw: '' });
+    }
     if (!candidates.length) return null;
     return candidates.reduce((best, candidate) => (
       !best || candidate.rank > best.rank || (candidate.rank === best.rank && candidate.specific && !best.specific)
@@ -665,8 +677,11 @@
     const compact = label.toLocaleLowerCase().replace(/[\s_-]+/g, '');
     if (/포르노|porn|adultonly18/.test(compact)) return { kind: 'porn', label: '포르노' };
     if (/성인망가|r18|x18|xrated|청소년관람불가/.test(compact)) {
-      const kind = String(contentKind || '').trim().toLocaleLowerCase();
-      const lightNovel = ['novel', '라노벨', '라이트노벨'].includes(kind);
+      const kind = String(contentKind || '').trim().toLocaleLowerCase().replace(/\s+/g, '');
+      const genreTokens = [meta, ...books].flatMap((source) => String(source?.genre || '').split(','))
+        .map((token) => token.trim().toLocaleLowerCase().replace(/\s+/g, ''));
+      const lightNovel = ['novel', '라노벨', '라이트노벨'].includes(kind)
+        || genreTokens.some((token) => token.endsWith('라이트노벨') || token.endsWith('라노벨') || token.includes('lightnovel'));
       return { kind: 'manga', label: lightNovel ? '성인라노벨' : '성인망가' };
     }
     if (/15세|15\+|ma15|m15|청소년/.test(compact) || Number(rating?.level) === 15) {
@@ -1529,8 +1544,8 @@
         rows.push(['출간일', published ? String(published).slice(0, 10) : '—']);
       } else {
         const holdings = meta.holdings_coverage || {};
-        const volumeStatus = holdings.holdings_status === 'missing' && holdings.holdings_label
-          ? holdings.holdings_label : (hasExplicitStatus ? explicitStatus : status);
+        const volumeStatus = holdings.holdings_status === 'missing'
+          ? '누락' : (hasExplicitStatus ? explicitStatus : status);
         const displayedStatus = pureVolumes && !standalone ? volumeStatus : status;
         rows.push(['연재상태', displayedStatus]);
         rows.push(['연재시작일', meta.publication_dates?.start || '—']);
@@ -3983,7 +3998,9 @@
     $('[data-banner-remove-field]').hidden = media || !meta.banner_image;
     for (const [key] of activeEditFields()) {
       if (!form.elements[key]) continue;
-      const value = key === 'books_lv'
+      const value = key === 'publication_status'
+        ? String(meta.publication_status ?? '')
+        : key === 'books_lv'
         ? editContentRatingValue()
         : key === 'link'
         ? split(meta[key]).join(', ')
@@ -4491,8 +4508,18 @@
     target.replaceChildren();
     for (const [key, label] of activeEditFields()) {
       const field = node('label', 'ds-field', label);
-      const input = document.createElement(key === 'books_lv' ? 'select' : 'input');
+      const input = document.createElement(['books_lv', 'publication_status'].includes(key) ? 'select' : 'input');
       input.name = key;
+      if (key === 'publication_status') {
+        for (const [value, text] of [['', '미지정 (자동 판정)'], ['0', '연재'], ['1', '휴재'], ['2', '완결']]) {
+          const option = node('option', '', text);
+          option.value = value;
+          input.append(option);
+        }
+        field.append(input);
+        target.append(field);
+        continue;
+      }
       if (key === 'books_lv') {
         for (const [value, text] of [['', '미지정'], ['everyone', '전체 이용가'], ['ma15+', '15세 이용가'], ['m', '18세 이용가'], ['r18', '성인망가 (R18)'], ['adult only 18+', '포르노 (Adult Only 18+)']]) {
           const option = node('option', '', text);

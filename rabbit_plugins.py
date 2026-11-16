@@ -63,7 +63,7 @@ from flask import g, has_request_context, request, session
 from plugins.metadata.base import BaseMetadataProvider
 from .provider_search import SOURCE_KINDS, SOURCE_LABELS, NOVEL_GENRES, search_novelpia_author, search as search_additional_provider
 
-PLUGIN_VERSION = '5.1.2'
+PLUGIN_VERSION = '5.1.5'
 REQUIRED_CORE_COMMIT = '9ba7c93'
 SERIES_TYPES_BY_LIBRARY = {
     'manga': {'manga', 'manhwa', 'manhua', 'oel'},
@@ -4751,8 +4751,11 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 # Older cached candidates may still carry creator credits.
                 # Local identity data must not take precedence over the
                 # selected external provider's writer/illustrator roles.
+                series_db_status = str(values.get('publication_status') or '').strip()
                 values = {key: value for key, value in values.items()
                           if key in {'localized_series', 'link', 'cover'}}
+                if series_db_status == '1':
+                    values['publication_status'] = '1'
             if source == 'series_db' and _metadata_content_kind(content_kind) != 'manhwa':
                 for field in ('cover', 'cover_by_volume', 'cover_by_title'):
                     values.pop(field, None)
@@ -4874,6 +4877,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             identity_metadata = _metadata_clean(series_identity[0].get('metadata') or {})
             if identity_metadata.get('localized_series'):
                 merged['localized_series'] = identity_metadata['localized_series']
+            if identity_metadata.get('publication_status') == '1':
+                merged['publication_status'] = '1'
         result = dict(candidates[0])
         for field in ('cover', 'cover_by_volume', 'cover_by_title', 'cover_maps_by_source', 'release_dates_by_volume',
                       'webtoon_cover_candidates'):
@@ -4939,7 +4944,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 db.row_factory = sqlite3.Row
                 rows = db.execute(
                     'SELECT id, title, native_title, secondary_titles_ko, titles, type, links, authors, artists, '
-                    'cover_raw_url, status, final_volume, content_rating FROM series '
+                    'cover_raw_url, status, content_rating FROM series '
                     "WHERE title LIKE ? OR native_title LIKE ? OR secondary_titles_ko LIKE ? OR titles LIKE ? "
                     "OR REPLACE(REPLACE(COALESCE(title, ''), ' ', ''), char(12288), '') LIKE ? "
                     "OR REPLACE(REPLACE(COALESCE(native_title, ''), ' ', ''), char(12288), '') LIKE ? "
@@ -4960,11 +4965,12 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             korean_titles = _korean_titles(row['titles'], row['secondary_titles_ko'])
             score = 0 if any(_series_title_key(item) == key for item in titles) else 1
             links = _json_names(row['links'])
-            # Series.db supplies only the original title, links and cover.
-            # Author/artist and other fields come from the selected external source.
+            # Series.db supplies identity, links, cover, and hiatus only.
+            # Releasing/completed statuses are not used.
             metadata = _metadata_clean({
                 'localized_series': row['native_title'],
                 'cover': row['cover_raw_url'], 'link': links,
+                'publication_status': '1' if str(row['status'] or '').strip().casefold() == 'hiatus' else '',
             })
             candidates.append({
                 'id': f"series_db:{row['id']}",
@@ -4987,19 +4993,12 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         return candidates[:limit]
 
     def _series_db_remote_identity(self, candidate, metadata, content_kind):
-        """Recover a Series.db identity when the provider has no Korean alias.
-
-        Some Series.db rows contain only an English/native title.  A Korean
-        provider result therefore cannot find them by title alone.  Use the
-        provider's total-volume marker and the Latin author credit in its
-        description as a strict secondary key, and only accept one row.
-        """
+        """Recover a Series.db identity only from an exact title match."""
         if not self._series_db_path().is_file():
             return {}
         candidate_title = str((candidate or {}).get('title') or '').strip()
-        # A Korean title match is stronger evidence than an author and volume
-        # count. The same creator may have several unrelated works with a
-        # similar count; the fallback below must not add their MangaBaka link.
+        # Do not attach a Series.db link through a count/author guess. A title
+        # match is required to avoid linking a different work by the same author.
         title_query = re.sub(r'\s*\(\s*총\s*\d+\s*(?:권|화|편).*$', '', candidate_title)
         title_query = re.sub(r'\s*\[[^\[\]]+\]\s*$', '', title_query).strip()
         title_matches = [row for row in self._series_db_search(title_query, content_kind, limit=80)
@@ -5015,103 +5014,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 return {}
             values = _metadata_clean(title_matches[0].get('metadata'))
             return {key: values[key] for key in ('localized_series', 'link') if values.get(key)}
-        volume_match = re.search(r'총\s*(\d+)\s*권', candidate_title, re.IGNORECASE)
-        final_volume = None
-        if volume_match:
-            try:
-                final_volume = int(volume_match.group(1))
-            except (TypeError, ValueError):
-                final_volume = None
-
-        credits = []
-        for value in ((metadata or {}).get('author'), (metadata or {}).get('cover_artist')):
-            credits.extend(re.split(r',|&|\band\b', str(value or ''), flags=re.IGNORECASE))
-        summary = str((metadata or {}).get('summary') or '')
-        for credit in re.findall(
-            r'(?:©|작가\s*[:：])\s*([^©\r\n]+)', summary, re.IGNORECASE):
-            credit = credit.split('/', 1)[0].split('...', 1)[0]
-            for name in re.split(r',|&|\band\b', credit, flags=re.IGNORECASE):
-                name = re.sub(r'\s+', ' ', name).strip(' .')
-                if re.search(r'[A-Za-z]', name) and len(name) >= 3:
-                    credits.append(name)
-        credits = list(dict.fromkeys(credits))
-        credits = [name for name in credits if re.search(r'[A-Za-z]', name) and len(name.strip()) >= 3]
-        if not credits:
-            return {}
-
-        kind = str(content_kind or '').strip().casefold()
-        allowed_types = SERIES_TYPES_BY_LIBRARY.get(kind) or {'manga', 'manhwa', 'manhua', 'oel'}
-        placeholders = ','.join('?' for _ in allowed_types)
-        credit_patterns = []
-        for name in credits:
-            name = str(name).strip()
-            # Provider credits sometimes omit the space in names such as
-            # ``NUMBER8`` while Series.db stores ``NUMBER 8``.
-            spaced = re.sub(r'([A-Za-z])([0-9])', r'\1%\2', name)
-            credit_patterns.extend([name, spaced] if spaced != name else [name])
-        credit_patterns = list(dict.fromkeys(credit_patterns))
-        where = ' OR '.join('authors LIKE ?' for _ in credit_patterns)
-        volume_values = []
-        if final_volume is not None:
-            volume_values = list(dict.fromkeys(
-                value for value in (final_volume, final_volume - 1, final_volume + 1)
-                if value > 0
-            ))
-        volume_clause = ''
-        volume_params = []
-        if volume_values:
-            volume_clause = 'AND CAST(final_volume AS INTEGER) IN (' + ','.join('?' for _ in volume_values) + ') '
-            volume_params = volume_values
-        path = self._series_db_path()
-        try:
-            with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=12) as db:
-                db.row_factory = sqlite3.Row
-                rows = db.execute(
-                    'SELECT id, native_title, links, cover_raw_url, authors, final_volume '
-                    f'FROM series WHERE type IN ({placeholders}) ' + volume_clause +
-                    'AND (' + where + ')',
-                    [*sorted(allowed_types), *volume_params, *[f'%{name}%' for name in credit_patterns]]).fetchall()
-        except (OSError, sqlite3.Error):
-            return {}
-
-        matched = []
-        credit_keys = list(dict.fromkeys(
-            re.sub(r'[^a-z0-9]+', '', name.casefold()) for name in credits
-        ))
-        for row in rows:
-            authors = _json_names(row['authors'])
-            author_keys = [re.sub(r'[^a-z0-9]+', '', name.casefold()) for name in authors]
-            overlap = sum(
-                1 for key in credit_keys
-                if key and any(key in author or author in key for author in author_keys)
-            )
-            required = 2 if len(credit_keys) >= 2 else 1
-            if overlap >= required:
-                matched.append((overlap, row))
-        if not matched:
-            return {}
-
-        if final_volume is not None:
-            distances = [
-                (abs(int(row['final_volume']) - final_volume), overlap, row)
-                for overlap, row in matched
-                if str(row['final_volume'] or '').strip().isdigit()
-            ]
-            if not distances:
-                return {}
-            best_distance = min(item[0] for item in distances)
-            matched = [(overlap, row) for distance, overlap, row in distances if distance == best_distance]
-        if len(matched) != 1:
-            return {}
-        row = matched[0][1]
-        result = _metadata_clean({
-            'localized_series': row['native_title'],
-            'link': _json_names(row['links']),
-        })
-        return {
-            key: value for key, value in result.items()
-            if key in {'localized_series', 'link'} and value
-        }
+        return {}
 
     def _manual_series_db_metadata(self, query, content_kind, original_title=''):
         """Fill the local original title and links for a manual remote match."""
@@ -5130,6 +5033,9 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         result = {}
         if localized:
             result['localized_series'] = localized
+        if any(_metadata_clean(candidate.get('metadata') or {}).get('publication_status') == '1'
+               for candidate in exact):
+            result['publication_status'] = '1'
         link = _join_links(*links)
         if link:
             result['link'] = link
@@ -5235,6 +5141,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             if local_metadata.get('link'):
                 raw_metadata['link'] = _join_links(
                     local_metadata.get('link'), raw_metadata.get('link'), item_data.get('url'))
+            if local_metadata.get('publication_status') == '1':
+                raw_metadata['publication_status'] = '1'
         metadata = _metadata_clean(raw_metadata)
         if item_source == 'yes24' and (not metadata.get('summary') or not metadata.get('tags')):
             details = _yes24_public_metadata(_yes24_candidate_item_id(item_data))
@@ -5244,10 +5152,13 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         if item_source == 'series_db':
             # A manual Series.db result may still contain legacy top-level fields
             # from a cached browser response. Never use those to rename a series.
+            series_db_status = str(metadata.get('publication_status') or '').strip()
             metadata = {
                 key: value for key, value in metadata.items()
                 if key in {'localized_series', 'link', 'cover'}
             }
+            if series_db_status == '1':
+                metadata['publication_status'] = '1'
         if item_data.get('url') and item_data.get('source') in ('ridi', 'naver', 'kyobo'):
             fetched = _remote_fetch_metadata(item_data.get('url'), item_data.get('source'))
             if item_source == 'ridi' and fetched.get('_fetch_error'):
@@ -5278,6 +5189,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                 fetched['link'] = _join_links(identity['link'], fetched.get('link'))
             metadata = fetched
             metadata = _metadata_clean(metadata)
+        if local_metadata.get('publication_status') == '1':
+            metadata['publication_status'] = '1'
         metadata = _metadata_apply_conversions(metadata, config)
         metadata = _metadata_clean(metadata)
         genre_rules = _metadata_value_map(config.get('metadata_genre_map'))
@@ -5297,6 +5210,8 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
             # Local identity fields are part of a manual match even when the
             # optional automatic-field list omitted them.
             selected.update({'localized_series', 'link'})
+            if local_metadata.get('publication_status') == '1':
+                selected.add('publication_status')
         overwrite = (
             not preserve_existing and (
                 _metadata_overwrite_enabled(config, content_kind)
@@ -6491,7 +6406,16 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
         # rules and publishes progress to Scan Activity when the core supports it.
         event = dict(payload or {})
         event['_rabbit_allow_overwrite'] = True
-        return self._queue_auto_collect(db_type, event)
+        result = self._queue_auto_collect(db_type, event)
+        if event.get('force_rescan'):
+            # The forced scan has already committed fresh values to BookOasis.
+            # Invalidate the plugin-facing BookOasis list/summary caches even
+            # when optional remote metadata collection is disabled or fails.
+            result = dict(result or {})
+            stats = dict(result.get('stats') or {})
+            stats['book_cache_refresh_required'] = True
+            result['stats'] = stats
+        return result
 
     def run_context_menu_action(self, db_type, action_id, context):
         if action_id == 'series_refresh_status':
@@ -7145,9 +7069,11 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
                     (str(item.get('publication_status') or '').strip()
                      for item in volume_metadata if str(item.get('publication_status') or '').strip()),
                     '')
-            comicinfo['publication_status_label'] = {
-                '0': '연재', '1': '휴재', '2': '완결',
-            }.get(publication_status, '')
+            from services.series_coverage import resolve_status_label
+            comicinfo['publication_status_label'] = resolve_status_label(
+                files, publication_status, book_count=len(files))
+            if comicinfo['publication_status_label'] == '알 수 없음':
+                comicinfo['publication_status_label'] = ''
             visible_files = []
             for row, info in zip(files, volume_metadata):
                 item = {key: row[key] for key in (
@@ -7269,7 +7195,7 @@ class RabbitPluginsMetadataProvider(BaseMetadataProvider):
 
         required_columns = {
             'id', 'title', 'type', 'links', 'status', 'titles', 'artists', 'authors',
-            'final_volume', 'content_rating', 'cover_raw_url', 'native_title',
+            'content_rating', 'cover_raw_url', 'native_title',
             'romanized_title', 'secondary_titles_ko', 'secondary_titles_en',
             'secondary_titles_ja', 'source_manga_updates_response_series_id',
             'source_manga_updates_response_recommendations',
