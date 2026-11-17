@@ -2444,6 +2444,12 @@
     return anchors;
   }
 
+  function relationGraphCableMotion(link,a,b,externalCableAnchors=new Set()) {
+    const anchoredExternal=Boolean(link.kind && !link.groupId
+      && (externalCableAnchors.has(a.id)||externalCableAnchors.has(b.id)));
+    return anchoredExternal?{speed:.000008,trail:.07}:{speed:.00003,trail:.12};
+  }
+
   function relationGraphCanDrift(n,externalCableAnchors=new Set()) {
     // Group members that anchor a relationship outside their group stay still
     // at idle. Letting those endpoints float makes the external cable visibly
@@ -4047,8 +4053,9 @@
             c.strokeStyle = relationColor; c.globalAlpha = 1; c.lineWidth = 1.8; c.stroke(); c.restore();
           }
           if (!reducedMotion && !(l.pairIndex>0)) {
-            const t = (performance.now() * .00003 + (Number(b.id) || 0) * .173) % 1;
-            const tail = Math.max(0, t - .12), p = point(t), q = point(tail);
+            const motion=relationGraphCableMotion(l,a,b,externalCableAnchors);
+            const t = (performance.now() * motion.speed + (Number(b.id) || 0) * .173) % 1;
+            const tail = Math.max(0, t - motion.trail), p = point(t), q = point(tail);
             const glow = c.createLinearGradient(q.x, q.y, p.x + .01, p.y + .01);
             glow.addColorStop(0, 'transparent'); glow.addColorStop(1, relationColor);
             c.beginPath(); c.moveTo(q.x, q.y);

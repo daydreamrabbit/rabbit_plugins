@@ -585,6 +585,12 @@ assert.equal(context.relationGraphCanDrift(cableNodes[2],cableAnchors),false,'an
 assert.equal(context.relationGraphCanDrift(cableNodes[3],cableAnchors),false,'a second externally connected chapter also stays still');
 assert.equal(context.relationGraphCanDrift(cableNodes[4],cableAnchors),true,'unanchored members retain gentle floating');
 assert.equal(cableAnchors.has('chapter-3'),false,'group-internal edges and layout spokes do not freeze the remaining group');
+assert.deepEqual(context.relationGraphCableMotion({kind:'side_story'},cableNodes[0],cableNodes[2],cableAnchors),
+  {speed:.000008,trail:.07},'idle external cables to grouped chapters use a slow, short light trail');
+assert.deepEqual(context.relationGraphCableMotion({kind:'sequel',groupId:'adaptations'},cableNodes[2],cableNodes[3],cableAnchors),
+  {speed:.00003,trail:.12},'internal chapter connections retain the usual moving light');
+assert.deepEqual(context.relationGraphCableMotion({kind:'side_story'},cableNodes[0],cableNodes[1],cableAnchors),
+  {speed:.00003,trail:.12},'ordinary external connections retain the usual moving light');
 {
   const a={id:'ice',x:-180,y:0,labelWidth:80,boxHeight:100};
   const b={id:'chapter-1',x:180,y:0,labelWidth:80,boxHeight:100};
