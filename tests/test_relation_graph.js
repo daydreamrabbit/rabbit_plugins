@@ -608,6 +608,28 @@ const anchorBefore={...cableState.cableAnchor},portBefore=cableState.portIndex;
 context.relationGraphGroupConnector({x:-300,y:0},{...cableBody,outline:cableBody.outline.map(p=>({x:p.x+1,y:p.y+.4}))},{state:cableState,idle:true});
 assert.ok(Math.hypot(cableState.cableAnchor.x-anchorBefore.x,cableState.cableAnchor.y-anchorBefore.y)<2,'idle attachment follows the nearby facing boundary');
 assert.equal(cableState.portIndex,portBefore,'idle drift does not flip the source port');
+{
+  const dragState={},dragBody={id:'drag-group',x:0,y:0,group:true,
+    outline:[{x:-100,y:-100},{x:100,y:-100},{x:100,y:100},{x:-100,y:100}]};
+  const measuredMath=Object.create(Math);let hypotCalls=0;
+  measuredMath.hypot=(...values)=>{hypotCalls++;return Math.hypot(...values);};context.Math=measuredMath;
+  let full,dragged,fullCalls,dragCalls,revalidated,revalidationCalls;
+  try {
+    full=context.relationGraphGroupConnector({id:'drag-root',x:-300,y:0,current:true},dragBody,{state:dragState,idle:true});
+    fullCalls=hypotCalls;hypotCalls=0;
+    dragged=context.relationGraphGroupConnector({id:'drag-root',x:-300,y:12,current:true},dragBody,{state:dragState,idle:false});
+    dragCalls=hypotCalls;
+    hypotCalls=0;
+    const movedBody={...dragBody,outline:dragBody.outline.map(p=>({x:p.x+20,y:p.y}))};
+    revalidated=context.relationGraphGroupConnector({id:'drag-root',x:-300,y:24,current:true},movedBody,{state:dragState,idle:false});
+    revalidationCalls=hypotCalls;
+  } finally { delete context.Math; }
+  assert.ok(full && dragged && dragState.cableAnchor,'drag keeps a valid group attachment');
+  assert.ok(dragCalls<fullCalls*.5,'held group connector reuses its validated boundary port instead of repeating the full contour search');
+  assert.ok(Math.hypot(dragged.ex-full.ex,dragged.ey-full.ey)<2,'a nearby drag keeps the cable attached to the same smooth boundary region');
+  assert.ok(revalidated && revalidationCalls>dragCalls*2,'a materially deformed contour falls back to full route validation');
+  console.log(`PASS held group connector route cache (${fullCalls} to ${dragCalls} distance checks) and contour-change fallback`);
+}
 assert.equal(baseSlime.outline[0].y,Math.min(...baseSlime.outline.map(p=>p.y)),'boundary sampling starts at the stable top of the title');
 for(const width of [240,320,390,640])for(const count of [2,3,4]) {
   const small=context.relationGraphLayout(count,width),boxes=[];

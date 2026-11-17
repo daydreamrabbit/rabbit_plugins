@@ -2483,6 +2483,74 @@
     const state=link.state||link,ports=[{x:1,y:0},{x:0,y:-1},{x:-1,y:0},{x:.87,y:.5},{x:-.87,y:.5},{x:.7071,y:-.7071},{x:-.7071,y:-.7071},{x:.87,y:-.5},{x:-.87,y:-.5}];
     const sourceRadius=a.current?30:24;
     const outline=b.outline.length<48?relationGraphResample(b.outline,64):b.outline;
+    const obstacles=[];
+    for(const n of link.obstacles||[])if(n.id!==a.id && n.id!==b.id)obstacles.push(n);
+    if(!a.current)obstacles.push(a.captionAbove?{x:a.x,y:a.y+(a.captionTop||-96)+32,labelWidth:a.labelWidth||112,boxHeight:Math.max(1,-48-(a.captionTop||-96))}
+      :{x:a.x+(a.captionOffset||0),y:a.y+64,labelWidth:a.labelWidth||112,boxHeight:Math.max(1,(a.boxHeight||104)-64)});
+    const visibleTo=edge=>{
+      const rx=edge.x-a.x,ry=edge.y-a.y;
+      for(let i=0;i<outline.length;i++) {
+        const v=outline[i],w=outline[(i+1)%outline.length],sx=w.x-v.x,sy=w.y-v.y,den=rx*sy-ry*sx;
+        if(Math.abs(den)<.00001)continue;
+        const vx=v.x-a.x,vy=v.y-a.y,t=(vx*sy-vy*sx)/den,s=(vx*ry-vy*rx)/den;
+        if(t>.001 && t<.975 && s>=0 && s<=1)return false;
+      }
+      return true;
+    };
+    const makeCandidate=(edge,port,portIndex)=>{
+      const distance=Math.hypot(a.x-edge.x,a.y-edge.y)||1;
+      const nx=(a.x-edge.x)/distance,ny=(a.y-edge.y)/distance,ex=edge.x+nx*3,ey=edge.y+ny*3;
+      const facing=port.x*(edge.x-a.x)/distance+port.y*(edge.y-a.y)/distance;
+      if(facing<.1 || ports.filter(other=>other.x*(edge.x-a.x)/distance+other.y*(edge.y-a.y)/distance>facing+.0001).length>=5)return null;
+      const portLength=Math.hypot(port.x,port.y)||1,sx=a.x+port.x/portLength*sourceRadius,sy=a.y+port.y/portLength*sourceRadius;
+      const len=Math.hypot(ex-sx,ey-sy),arm=Math.min(65,len*.32),ux=(ex-sx)/(len||1),uy=(ey-sy)/(len||1),budget=Math.min(20,len*.1);
+      const control=(x,y)=>{const along=Math.max(len*.2,Math.min(len*.8,(x-sx)*ux+(y-sy)*uy));
+        const across=Math.max(-budget,Math.min(budget,-(x-sx)*uy+(y-sy)*ux));
+        return {x:sx+ux*along-uy*across,y:sy+uy*along+ux*across};};
+      const c1=control(sx+port.x*arm,sy+port.y*arm),c2=control(ex+nx*arm,ey+ny*arm);
+      const point=t=>({x:(1-t)**3*sx+3*(1-t)**2*t*c1.x+3*(1-t)*t*t*c2.x+t**3*ex,
+        y:(1-t)**3*sy+3*(1-t)**2*t*c1.y+3*(1-t)*t*t*c2.y+t**3*ey});
+      const samples=Array.from({length:19},(_,k)=>point((k+1)/20));
+      let blocked=0;
+      for(const n of obstacles)for(let k=0;k<samples.length;k++) {
+        const v=samples[k];
+        if(v.x>n.x-n.labelWidth/2-6 && v.x<n.x+n.labelWidth/2+6 && v.y>n.y-32 && v.y<n.y-24+n.boxHeight+6){blocked++;break;}
+      }
+      const proximity=state.cableAnchor?Math.hypot(edge.x-state.cableAnchor.x,edge.y-state.cableAnchor.y)*.12:0;
+      let fan=0;
+      for(const cable of link.cables||[])for(const anchor of cable.anchors||[]) {
+        if(anchor.id===a.id)fan+=Math.max(0,18-Math.hypot(sx-anchor.point.x,sy-anchor.point.y))*80;
+      }
+      for(const other of link.neighbours||[]) {
+        if(other.id===a.id || other.id===b.id)continue;
+        const ox=other.x-a.x,oy=other.y-a.y,ol=Math.hypot(ox,oy)||1,cosine=(port.x*ox+port.y*oy)/ol;
+        fan+=Math.max(0,(cosine-.9)/.1)*180;
+      }
+      return {sx,sy,ex,ey,c1,c2,len:len+sourceRadius,ra:sourceRadius,rb:0,point,portIndex,blocked,
+        score:blocked*10000+fan+len+(1-facing)*45+proximity+(state.portIndex!==undefined && state.portIndex!==portIndex?8:0),
+        anchor:{x:edge.x,y:edge.y}};
+    };
+    // Reuse the validated cover port while the pointer is held. The group
+    // outline is still checked for a nearby boundary point and clear path;
+    // obstacle or contour changes fall through to the full route search.
+    if(link.idle===false && state.cableAnchor && Number.isInteger(state.portIndex)) {
+      let nearest=null;
+      for(let i=0;i<outline.length;i++) {
+        const p=outline[i],q=outline[(i+1)%outline.length],dx=q.x-p.x,dy=q.y-p.y;
+        const u=Math.max(0,Math.min(1,((state.cableAnchor.x-p.x)*dx+(state.cableAnchor.y-p.y)*dy)/(dx*dx+dy*dy||1)));
+        const edge={x:p.x+dx*u,y:p.y+dy*u},distance=Math.hypot(edge.x-state.cableAnchor.x,edge.y-state.cableAnchor.y);
+        if(!nearest || distance<nearest.distance)nearest={edge,distance};
+      }
+      if(nearest && nearest.distance<8 && visibleTo(nearest.edge)) {
+        const distance=Math.hypot(a.x-nearest.edge.x,a.y-nearest.edge.y)||1,nx=(a.x-nearest.edge.x)/distance,ny=(a.y-nearest.edge.y)/distance;
+        const port=state.portIndex<ports.length?ports[state.portIndex]:{x:-nx,y:-ny};
+        const selected=makeCandidate(nearest.edge,port,state.portIndex);
+        if(selected && selected.blocked===0) {
+          state.portIndex=selected.portIndex;state.cableAnchor=selected.anchor;
+          return selected;
+        }
+      }
+    }
     // Attachment is a world-space point, never a mutable contour vertex index.
     const candidates=[];
     const nearbyEdges=outline.map((p,i)=>{
@@ -2493,53 +2561,11 @@
       const q=outline[(i+1)%outline.length],dx=q.x-p.x,dy=q.y-p.y;
       const u=Math.max(0,Math.min(1,((a.x-p.x)*dx+(a.y-p.y)*dy)/(dx*dx+dy*dy||1)));
       const edge={x:p.x+dx*u,y:p.y+dy*u},distance=Math.hypot(a.x-edge.x,a.y-edge.y)||1;
-      let visible=true;
-      outline.forEach((v,j)=>{
-        const w=outline[(j+1)%outline.length],sx=w.x-v.x,sy=w.y-v.y,rx=edge.x-a.x,ry=edge.y-a.y,den=rx*sy-ry*sx;
-        if(Math.abs(den)<.00001)return;
-        const vx=v.x-a.x,vy=v.y-a.y,t=(vx*sy-vy*sx)/den,s=(vx*ry-vy*rx)/den;
-        if(t>.001 && t<.975 && s>=0 && s<=1)visible=false;
-      });
-      if(!visible)return;
-      const nx=(a.x-edge.x)/distance,ny=(a.y-edge.y)/distance,ex=edge.x+nx*3,ey=edge.y+ny*3;
-      const facingPorts=[...ports,{x:-nx,y:-ny}];
-      facingPorts.forEach((port,portIndex)=>{
-        const facing=port.x*(edge.x-a.x)/distance+port.y*(edge.y-a.y)/distance;
-        if(facing<.1)return;
-        if(ports.filter(other=>other.x*(edge.x-a.x)/distance+other.y*(edge.y-a.y)/distance>facing+.0001).length>=5)return;
-        const portLength=Math.hypot(port.x,port.y)||1;
-        const sx=a.x+port.x/portLength*sourceRadius,sy=a.y+port.y/portLength*sourceRadius,len=Math.hypot(ex-sx,ey-sy),arm=Math.min(65,len*.32);
-        const ux=(ex-sx)/(len||1),uy=(ey-sy)/(len||1),budget=Math.min(20,len*.1);
-        const control=(x,y)=>{const along=Math.max(len*.2,Math.min(len*.8,(x-sx)*ux+(y-sy)*uy));
-          const across=Math.max(-budget,Math.min(budget,-(x-sx)*uy+(y-sy)*ux));
-          return {x:sx+ux*along-uy*across,y:sy+uy*along+ux*across};};
-        const c1=control(sx+port.x*arm,sy+port.y*arm),c2=control(ex+nx*arm,ey+ny*arm);
-        const point=t=>({x:(1-t)**3*sx+3*(1-t)**2*t*c1.x+3*(1-t)*t*t*c2.x+t**3*ex,
-          y:(1-t)**3*sy+3*(1-t)**2*t*c1.y+3*(1-t)*t*t*c2.y+t**3*ey});
-        const samples=Array.from({length:19},(_,k)=>point((k+1)/20));
-        let blocked=0;
-        const ownLabel=a.captionAbove?{x:a.x,y:a.y+(a.captionTop||-96)+32,labelWidth:a.labelWidth||112,boxHeight:Math.max(1,-48-(a.captionTop||-96))}
-          :{x:a.x+(a.captionOffset||0),y:a.y+64,labelWidth:a.labelWidth||112,boxHeight:Math.max(1,(a.boxHeight||104)-64)};
-        const obstacles=[];
-        for(const n of link.obstacles||[])if(n.id!==a.id && n.id!==b.id)obstacles.push(n);
-        if(!a.current)obstacles.push(ownLabel);
-        for(const n of obstacles)for(let k=1;k<20;k++) {
-          const v=samples[k-1];
-          if(v.x>n.x-n.labelWidth/2-6 && v.x<n.x+n.labelWidth/2+6 && v.y>n.y-32 && v.y<n.y-24+n.boxHeight+6){blocked++;break;}
-        }
-        const proximity=state.cableAnchor?Math.hypot(edge.x-state.cableAnchor.x,edge.y-state.cableAnchor.y)*.12:0;
-        let fan=0;
-        for(const cable of link.cables||[])for(const anchor of cable.anchors||[]) {
-          if(anchor.id===a.id)fan+=Math.max(0,18-Math.hypot(sx-anchor.point.x,sy-anchor.point.y))*80;
-        }
-        for(const other of link.neighbours||[]) {
-          if(other.id===a.id || other.id===b.id)continue;
-          const ox=other.x-a.x,oy=other.y-a.y,ol=Math.hypot(ox,oy)||1;
-          const cosine=(port.x*ox+port.y*oy)/ol;
-          fan+=Math.max(0,(cosine-.9)/.1)*180;
-        }
-        const score=blocked*10000+fan+len+(1-facing)*45+proximity+(state.portIndex!==undefined && state.portIndex!==portIndex?8:0);
-        candidates.push({sx,sy,ex,ey,c1,c2,len:len+sourceRadius,ra:sourceRadius,rb:0,point,portIndex,score,anchor:{x:edge.x,y:edge.y}});
+      if(!visibleTo(edge))return;
+      const nx=(a.x-edge.x)/distance,ny=(a.y-edge.y)/distance;
+      [...ports,{x:-nx,y:-ny}].forEach((port,portIndex)=>{
+        const candidate=makeCandidate(edge,port,portIndex);
+        if(candidate)candidates.push(candidate);
       });
     });
     if(!candidates.length)return {sx:a.x,sy:a.y,ex:a.x,ey:a.y,cx:a.x,cy:a.y,len:0,ra:1,rb:1,point:()=>({x:a.x,y:a.y})};
