@@ -2854,10 +2854,13 @@
         return straight;
       }
     }
-    const checkSoftIntersections=link.frame===undefined || !unchanged || link.frame%4===0;
-    // Idle drift moves covers by tiny increments. Recheck a retained route on
-    // the existing soft-intersection cadence; otherwise avoid rebuilding both
-    // 33-point straight samples and 25-point collision samples on every frame.
+    const checkSoftIntersections=link.frame===undefined || !unchanged
+      || (!link.stableIdleRoute && link.frame%4===0);
+    // External cables use fixed group-member anchors. Their neighboring covers
+    // can float by a pixel, so periodic collision rechecks would keep changing
+    // the chosen ports and make the cable appear to wobble while nothing moves.
+    // Revalidate only after meaningful geometry changes; ordinary cables keep
+    // their periodic soft-intersection checks.
     if(cached && link.idle && !checkSoftIntersections) {
       const p=ports[state.sourcePort],q=ports[state.targetPort];
       if(p && q) {
@@ -3947,7 +3950,8 @@
           const routing = connectorGroup ? {...l,state:l,idle:!drag && settleFrames===0,
               neighbours:frameAdjacentNodesById.get(connectorAnchor.id)||[],
               obstacles:localNodes.filter(n=>n.id!==connectorAnchor.id && n.groupId!==connectorGroup.id)}
-            : l.kind ? {...l,state:relationRoutes.get(l.pairKey),frame:edgeFrame,idle:!drag && settleFrames===0,limits:{width,height},
+            : l.kind ? {...l,state:relationRoutes.get(l.pairKey),frame:edgeFrame,idle:!drag && settleFrames===0,
+                stableIdleRoute:externalCableAnchors.has(a.id)||externalCableAnchors.has(b.id),limits:{width,height},
               adjacency,neighbours:localNeighbours,spokes:localSpokes,obstacles:localNodes} : l.spoke ? {
                 ...l,state:l,limits:{width,height},idle:!drag && settleFrames===0,adjacency,neighbours:localNeighbours,
                 obstacles:localNodes,frame:edgeFrame

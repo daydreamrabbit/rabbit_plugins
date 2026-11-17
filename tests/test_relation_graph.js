@@ -585,6 +585,27 @@ assert.equal(context.relationGraphCanDrift(cableNodes[2],cableAnchors),false,'an
 assert.equal(context.relationGraphCanDrift(cableNodes[3],cableAnchors),false,'a second externally connected chapter also stays still');
 assert.equal(context.relationGraphCanDrift(cableNodes[4],cableAnchors),true,'unanchored members retain gentle floating');
 assert.equal(cableAnchors.has('chapter-3'),false,'group-internal edges and layout spokes do not freeze the remaining group');
+{
+  const a={id:'ice',x:-180,y:0,labelWidth:80,boxHeight:100};
+  const b={id:'chapter-1',x:180,y:0,labelWidth:80,boxHeight:100};
+  const blocker={id:'floating-sibling',x:0,y:0,labelWidth:190,boxHeight:110};
+  const farCable={samples:Array.from({length:33},(_,i)=>({x:-500,y:-400+i*25})),shared:[],anchors:[],
+    bounds:{left:-500,right:-500,top:-400,bottom:400}};
+  const state={},link={state,frame:1,idle:true,stableIdleRoute:true,limits:{width:1000,height:800},
+    obstacles:[blocker],spokes:[],cables:[farCable],adjacency:{}};
+  const first=context.relationGraphBookCable(a,b,link,null);
+  const firstRoute=first.point(.5),firstPorts=[state.sourcePort,state.targetPort];
+  blocker.x+=.8;blocker.y+=.6;
+  const measuredMath=Object.create(Math);let hypotCalls=0;
+  measuredMath.hypot=(...values)=>{hypotCalls++;return Math.hypot(...values);};context.Math=measuredMath;
+  try {
+    const idle=context.relationGraphBookCable(a,b,{...link,frame:4},null);
+    assert.deepEqual([state.sourcePort,state.targetPort],firstPorts,'a stable external cable keeps its validated ports through sub-pixel sibling drift');
+    assert.ok(Math.hypot(idle.point(.5).x-firstRoute.x,idle.point(.5).y-firstRoute.y)<.001,
+      'small idle obstacle drift cannot reshape an external cable');
+    assert.ok(hypotCalls<10,'stable external cables skip periodic collision rescoring');
+  } finally { delete context.Math; }
+}
 assert.equal(context.relationGraphCanDrift({id:'recommendation'},true),false,'recommendation works stay fixed instead of adding motion cost');
 assert.equal(context.relationGraphCanDrift({groupId:'family',current:true}),false,'current work has no automatic drift');
 {
