@@ -2081,25 +2081,40 @@
     return {...fallback,height:Math.max(before.length,after.length)*pitch+70,positions:nodes.map(n=>positions.get(n.id))};
   }
 
-  function relationGraphGroupedOrbitLayout(nodes,width) {
+  function relationGraphGroupedOrbitLayout(nodes,width,groups,edges) {
     const focus=nodes.find(n=>n.current),peers=nodes.filter(n=>!n.current);
     if(!focus || peers.length<4 || peers.length>5 || width<430)return null;
     const fallback=relationGraphLayout(nodes.length,width),reach=Math.min(190,(width-fallback.labelWidth-40)/2);
     if(reach<112)return null;
     const verticalReach=135+peers.length*16;
-    const angles=peers.map((_,i)=>Math.PI/3+i*(Math.PI*4/3)/(peers.length-1));
-    const slots=angles.map((angle,index)=>({angle,index})).sort((a,b)=>{
-      const distance=angle=>Math.abs(Math.atan2(Math.sin(angle-Math.PI),Math.cos(angle-Math.PI)));
-      return distance(a.angle)-distance(b.angle) || Number(Math.sin(a.angle)>=0)-Number(Math.sin(b.angle)>=0);
-    });
     const roleOrder={prequel:0,original:1,side_story:2,spin_off:3,main_story:4,sequel:5};
     const ordered=[...peers].sort((a,b)=>(roleOrder[a.relationType]??3)-(roleOrder[b.relationType]??3)
       || String(a.label||a.id).localeCompare(String(b.label||b.id),'ko'));
     const positions=new Map([[focus.id,[0,0]]]);
-    ordered.forEach((peer,i)=>{
-      const angle=slots[i].angle;
-      positions.set(peer.id,[Math.cos(angle)*reach,Math.sin(angle)*verticalReach]);
-    });
+    const peerIds=new Set(peers.map(n=>n.id)),groupMemberIds=new Set(groups.flatMap(group=>group.members));
+    const family=groups.find(group=>group.category==='focused-family');
+    const linkedIds=new Set();
+    for(const edge of edges) {
+      if(family && family.members.includes(edge.source)!==family.members.includes(edge.target))continue;
+      if(groupMemberIds.has(edge.source) && peerIds.has(edge.target))linkedIds.add(edge.target);
+      if(groupMemberIds.has(edge.target) && peerIds.has(edge.source))linkedIds.add(edge.source);
+    }
+    const linked=ordered.filter(n=>linkedIds.has(n.id)),unlinked=ordered.filter(n=>!linkedIds.has(n.id));
+    if(!linked.length) {
+      const angles=peers.map((_,i)=>Math.PI/3+i*(Math.PI*4/3)/(peers.length-1));
+      const slots=angles.map(angle=>({angle})).sort((a,b)=>{
+        const distance=angle=>Math.abs(Math.atan2(Math.sin(angle-Math.PI),Math.cos(angle-Math.PI)));
+        return distance(a.angle)-distance(b.angle) || Number(Math.sin(a.angle)>=0)-Number(Math.sin(b.angle)>=0);
+      });
+      ordered.forEach((peer,i)=>positions.set(peer.id,[Math.cos(slots[i].angle)*reach,Math.sin(slots[i].angle)*verticalReach]));
+    } else {
+      const linkedSlots=[[0,-verticalReach],[reach*.62,verticalReach*.82],[-reach*.62,verticalReach*.82],
+        [-reach*.62,-verticalReach*.82],[reach*.62,-verticalReach*.82]];
+      const unlinkedSlots=[[-reach,0],[reach*.72,-verticalReach*.68],[-reach*.56,verticalReach*.84],
+        [reach*.56,verticalReach*.84]];
+      linked.forEach((peer,i)=>positions.set(peer.id,linkedSlots[i]));
+      unlinked.forEach((peer,i)=>positions.set(peer.id,unlinkedSlots[i]));
+    }
     return {height:verticalReach*2+218,labelWidth:fallback.labelWidth,positions:nodes.map(n=>positions.get(n.id))};
   }
 
@@ -2195,7 +2210,7 @@
     return { groups, extraEdges };
   }
 
-  function relationGraphGroupedLayout(nodes, width, groups) {
+  function relationGraphGroupedLayout(nodes, width, groups, extraEdges=[]) {
     const ordinary = nodes.filter(n => !n.group && !n.groupId);
     const panels = [{ ordinary }, ...groups.map(group => ({ group }))];
     const columns = width >= 820 ? Math.min(panels.length, Math.floor(width / 410)) : 1;
@@ -2211,7 +2226,7 @@
           panel.positions=branch.positions;panel.height=branch.height;
           continue;
         }
-        const orbit=relationGraphGroupedOrbitLayout(ordinary,panelWidth);
+        const orbit=relationGraphGroupedOrbitLayout(ordinary,panelWidth,groups,extraEdges);
         if(orbit) {
           panel.positions=orbit.positions;panel.height=orbit.height;
           continue;
@@ -3626,7 +3641,7 @@
       const viewport=relationGraphViewport(availableWidth,works.length+1,topology.groups.length>0);
       width=viewport.width;displayScale=viewport.scale;
       layout = graphData.recommendations?relationGraphRecommendationLayout(nodes.length,width)
-        :topology.groups.length ? relationGraphGroupedLayout(nodes, width, topology.groups) : relationGraphBranchLayout(nodes,width,topology.extraEdges);
+        :topology.groups.length ? relationGraphGroupedLayout(nodes, width, topology.groups, topology.extraEdges) : relationGraphBranchLayout(nodes,width,topology.extraEdges);
       height = layout.height+(topology.groups.length || nodes.length>5?72:24);
       stage.style.height = height*displayScale + 'px';
       stage.dataset.scale=String(displayScale);
