@@ -2269,11 +2269,44 @@
     }
     const pairs = new Map();
     const labelTargets=new Set(),targetSlots=new Map();
-    for (const edge of topology.extraEdges) {
-      // In an adaptation's focused family, show its direct relationships.
+    const family=topology.groups.find(group=>group.category==='focused-family');
+    const edgeEntries=topology.extraEdges.map((edge,index)=>({edge,index})).filter(({edge})=>{
+      // Keep the focused family's registered internal relationships visible.
       // Cross-family original/adaptation details remain in the source data.
-      const family=topology.groups.find(group=>group.category==='focused-family');
-      if(family && family.members.includes(edge.source)!==family.members.includes(edge.target))continue;
+      return !(family && family.members.includes(edge.source)!==family.members.includes(edge.target));
+    });
+    // Collapse complete shared relationships for every visible multi-member
+    // group, regardless of its category or whether it contains the focus.
+    const collapsibleGroups=new Map(topology.groups
+      .filter(group=>group.members.length>1)
+      .map(group=>[group.id,group]));
+    const groupEdgeCoverage=new Map();
+    for(const entry of edgeEntries) {
+      const {edge,index}=entry,source=byId.get(edge.source),target=byId.get(edge.target);
+      const sourceGroup=source?.groupId && collapsibleGroups.get(source.groupId);
+      const targetGroup=target?.groupId && collapsibleGroups.get(target.groupId);
+      let group,memberId,externalId,direction;
+      if(sourceGroup && !targetGroup && !target?.groupId && !target?.group) {
+        group=sourceGroup;memberId=edge.source;externalId=edge.target;direction='out';
+      } else if(targetGroup && !sourceGroup && !source?.groupId && !source?.group) {
+        group=targetGroup;memberId=edge.target;externalId=edge.source;direction='in';
+      } else continue;
+      const key=JSON.stringify([group.id,externalId,direction,edge.kind,edge.label]);
+      if(!groupEdgeCoverage.has(key))groupEdgeCoverage.set(key,{group,externalId,direction,entries:[],members:new Set()});
+      const candidate=groupEdgeCoverage.get(key);candidate.entries.push(entry);candidate.members.add(memberId);
+    }
+    const collapsedEdgeIndexes=new Set(),groupEdges=[];
+    for(const candidate of groupEdgeCoverage.values()) {
+      if(!candidate.group.members.every(id=>candidate.members.has(id)))continue;
+      for(const entry of candidate.entries)collapsedEdgeIndexes.add(entry.index);
+      const edge=candidate.entries[0].edge;
+      groupEdges.push({...edge,
+        source:candidate.direction==='out'?candidate.group.id:candidate.externalId,
+        target:candidate.direction==='out'?candidate.externalId:candidate.group.id,
+        aggregateGroupId:candidate.group.id,aggregateCount:candidate.group.members.length});
+    }
+    const displayEdges=[...edgeEntries.filter(entry=>!collapsedEdgeIndexes.has(entry.index)).map(entry=>entry.edge),...groupEdges];
+    for (const edge of displayEdges) {
       const key = [edge.source, edge.target].sort().join(':');
       if (!pairs.has(key)) pairs.set(key, []);
       pairs.get(key).push(edge);
@@ -2282,7 +2315,8 @@
       const a = byId.get(edges[0].source), b = byId.get(edges[0].target);
       const groupId = a?.groupId && a.groupId === b?.groupId ? a.groupId : null;
       const distinct = edges.filter((edge, i) => edges.findIndex(other => other.source === edge.source && other.target === edge.target && other.kind === edge.kind) === i);
-      const detailedSide=!groupId && distinct.find(edge=>['side_story','adaptation'].includes(edge.kind) && byId.get(edge.target)?.kind!==edge.label);
+      const detailedSide=!groupId && !distinct.some(edge=>edge.aggregateGroupId)
+        && distinct.find(edge=>['side_story','adaptation'].includes(edge.kind) && byId.get(edge.target)?.kind!==edge.label);
       const explicitMain=detailedSide && distinct.find(edge=>edge.kind==='main_story' && edge.source===detailedSide.target && edge.target===detailedSide.source);
       const explicitOriginal=detailedSide && detailedSide.kind==='adaptation' && distinct.find(edge=>edge.kind==='original' && edge.source===detailedSide.target && edge.target===detailedSide.source);
       distinct.forEach((edge, i) => {
@@ -2291,7 +2325,8 @@
           {role:explicitMain?'본편':explicitOriginal || detailedSide.kind==='adaptation' && byId.get(edge.source)?.kind==='원작'?'원작':'기준',title:byId.get(edge.source)?.shortLabel||byId.get(edge.source)?.label||''},
           {role:edge.kind==='adaptation'?'각색':'외전',title:target?.shortLabel||target?.label||''}
         ]:null;
-        const showLabel=edge!==explicitMain && edge!==explicitOriginal && (Boolean(labelRoles) || target?.kind!==edge.label && !labelTargets.has(key));
+        const showLabel=Boolean(edge.aggregateGroupId) || edge!==explicitMain && edge!==explicitOriginal
+          && (Boolean(labelRoles) || target?.kind!==edge.label && !labelTargets.has(key));
         const targetSlot=targetSlots.get(edge.target)||0;
         if(showLabel){labelTargets.add(key);targetSlots.set(edge.target,targetSlot+1);}
         links.push({ ...edge,groupId,lane:0,pairKey:[edge.source,edge.target].sort().join(':'),pairIndex:i,pairSize:distinct.length,showLabel,targetSlot,labelRoles });
@@ -2931,6 +2966,12 @@
     return make({x:Math.cos(state.sourceAngle),y:Math.sin(state.sourceAngle)},{x:Math.cos(state.targetAngle),y:Math.sin(state.targetAngle)},state.routeBend);
   }
 
+  function relationGraphReverseCurve(curve) {
+    return {...curve,sx:curve.ex,sy:curve.ey,ex:curve.sx,ey:curve.sy,ra:curve.rb,rb:curve.ra,
+      c1:curve.c2,c2:curve.c1,points:Array.isArray(curve.points)?[...curve.points].reverse():curve.points,
+      point:t=>curve.point(1-t)};
+  }
+
   function relationGraphCurve(a, b, group, link = {}) {
     if(link.kind && !link.canonical) {
       const reversed=String(a.id)>String(b.id),state=link.state||{};
@@ -2940,11 +2981,11 @@
         curve=relationGraphCurve(reversed?b:a,reversed?a:b,group,{...link,canonical:true,lane:0});
         if(link.frame!==undefined){state.frame=link.frame;state.curve=curve;}
       }
-      return reversed?{...curve,sx:curve.ex,sy:curve.ey,ex:curve.sx,ey:curve.sy,ra:curve.rb,rb:curve.ra,c1:curve.c2,c2:curve.c1,
-        point:t=>curve.point(1-t)}:curve;
+      return reversed?relationGraphReverseCurve(curve):curve;
     }
     const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
     if (b.group && b.outline) return relationGraphGroupConnector(a,b,link);
+    if (a.group && a.outline) return relationGraphReverseCurve(relationGraphGroupConnector(b,a,link));
     if(link.kind || link.spoke)return relationGraphBookCable(a,b,link,group);
     if (link.kind || group?.members?.length === 2) {
       const extent = (n,vx,vy) => {
@@ -3835,16 +3876,17 @@
             left:Math.min(a.x,b.x)-routePadding,right:Math.max(a.x,b.x)+routePadding,
             top:Math.min(a.y,b.y)-routePadding,bottom:Math.max(a.y,b.y)+routePadding,
           };
-          const obstacleBounds=b.group?{left:Math.min(a.x,b.x)-Math.max(routePadding,b.groupWidth/2+120),
-            right:Math.max(a.x,b.x)+Math.max(routePadding,b.groupWidth/2+120),
-            top:Math.min(a.y,b.y)-Math.max(routePadding,b.groupHeight/2+120),
-            bottom:Math.max(a.y,b.y)+Math.max(routePadding,b.groupHeight/2+120)}:routeBounds;
+          const connectorGroup=b.group?b:a.group?a:null,connectorAnchor=connectorGroup===a?b:a;
+          const obstacleBounds=connectorGroup?{left:Math.min(a.x,b.x)-Math.max(routePadding,connectorGroup.groupWidth/2+120),
+            right:Math.max(a.x,b.x)+Math.max(routePadding,connectorGroup.groupWidth/2+120),
+            top:Math.min(a.y,b.y)-Math.max(routePadding,connectorGroup.groupHeight/2+120),
+            bottom:Math.max(a.y,b.y)+Math.max(routePadding,connectorGroup.groupHeight/2+120)}:routeBounds;
           const localNodes=frameBookNodeIndex?frameBookNodeIndex.query(obstacleBounds):frameBookNodes;
           const localSpokes=frameBookSpokeIndex?frameBookSpokeIndex.query(routeBounds):frameBookSpokes;
           const localNeighbours=[...(frameAdjacentNodesById.get(a.id)||[]),...(frameAdjacentNodesById.get(b.id)||[])];
-          const routing = b.group ? {...l,state:l,idle:!drag && settleFrames===0,
-              neighbours:frameAdjacentNodesById.get(a.id)||[],
-              obstacles:localNodes.filter(n=>n.id!==a.id && n.groupId!==b.id)}
+          const routing = connectorGroup ? {...l,state:l,idle:!drag && settleFrames===0,
+              neighbours:frameAdjacentNodesById.get(connectorAnchor.id)||[],
+              obstacles:localNodes.filter(n=>n.id!==connectorAnchor.id && n.groupId!==connectorGroup.id)}
             : l.kind ? {...l,state:relationRoutes.get(l.pairKey),frame:edgeFrame,idle:!drag && settleFrames===0,limits:{width,height},
               adjacency,neighbours:localNeighbours,spokes:localSpokes,obstacles:localNodes} : l.spoke ? {
                 ...l,state:l,limits:{width,height},idle:!drag && settleFrames===0,adjacency,neighbours:localNeighbours,
@@ -3882,7 +3924,7 @@
           const arrowMark=routeSamples?relationGraphEndMark(curve,0,routeSamples):l.kind?relationGraphArrowMark(curve):null;
           const active = frameHighlightedNode;
           const hot = highlighted === a.id || highlighted === b.id
-            || (active?.groupId && (active.groupId === l.groupId || active.groupId === b.id));
+            || (active?.groupId && (active.groupId === l.groupId || active.groupId === b.id || active.groupId === l.aggregateGroupId));
           const relationColor = b.inkColor || accentColor;
           c.save(); c.beginPath(); c.moveTo(sx, sy); c.lineJoin = 'round'; c.lineCap = 'round';
           if (points) for (const p of points.slice(1)) c.lineTo(p.x, p.y);
