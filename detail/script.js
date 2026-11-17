@@ -2607,10 +2607,10 @@
         score:blocked*10000+fan+len+(1-facing)*45+proximity+(state.portIndex!==undefined && state.portIndex!==portIndex?8:0),
         anchor:{x:edge.x,y:edge.y}};
     };
-    // Reuse the validated cover port while the pointer is held. The group
-    // outline is still checked for a nearby boundary point and clear path;
-    // obstacle or contour changes fall through to the full route search.
-    if(link.idle===false && state.cableAnchor && Number.isInteger(state.portIndex)) {
+    // Keep the selected boundary contact while the soft group subtly drifts.
+    // Project it onto the latest contour and retain its cover port; larger
+    // contour changes or an obstructed route still trigger a full search.
+    if(state.cableAnchor && Number.isInteger(state.portIndex)) {
       let nearest=null;
       for(let i=0;i<outline.length;i++) {
         const p=outline[i],q=outline[(i+1)%outline.length],dx=q.x-p.x,dy=q.y-p.y;
@@ -2618,7 +2618,8 @@
         const edge={x:p.x+dx*u,y:p.y+dy*u},distance=Math.hypot(edge.x-state.cableAnchor.x,edge.y-state.cableAnchor.y);
         if(!nearest || distance<nearest.distance)nearest={edge,distance};
       }
-      if(nearest && nearest.distance<8 && visibleTo(nearest.edge)) {
+      const anchorTolerance=link.idle?14:8;
+      if(nearest && nearest.distance<anchorTolerance && visibleTo(nearest.edge)) {
         const distance=Math.hypot(a.x-nearest.edge.x,a.y-nearest.edge.y)||1,nx=(a.x-nearest.edge.x)/distance,ny=(a.y-nearest.edge.y)/distance;
         const port=state.portIndex<ports.length?ports[state.portIndex]:{x:-nx,y:-ny};
         const selected=makeCandidate(nearest.edge,port,state.portIndex);
