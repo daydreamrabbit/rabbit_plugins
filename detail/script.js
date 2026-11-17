@@ -2628,6 +2628,15 @@
     return {add,query,size:all.size};
   }
 
+  function relationGraphLabelSize(cache,label,signature,measure) {
+    let size=cache.get(label);
+    if(!size || size.signature!==signature) {
+      size={...measure(),signature};
+      cache.set(label,size);
+    }
+    return size;
+  }
+
   function relationGraphBookCable(a,b,link,group) {
     // End each cable on the visible cover ring, rather than outside its halo.
     const dx=b.x-a.x,dy=b.y-a.y,distance=Math.hypot(dx,dy)||1,ra=a.current?32:26,rb=b.current?32:26;
@@ -3415,7 +3424,7 @@
     const frameShownById=new Map();
     const frameAdjacentNodesById=new Map();
     let softLinks=[],settleFrames=0,quietFrames=0,releasedSpring=null,settleAnchor=null,settleUntil=0;
-    const relationRoutes=new Map(),renderedCables=new Map();
+    const relationRoutes=new Map(),renderedCables=new Map(),linkLabelSizes=new Map();
     let renderedCableIndex=relationGraphSpatialIndex(),renderedLabelIndex=relationGraphSpatialIndex();let edgeFrame=0;
     const motionEpoch=performance.now()/1000;
     const profileEnabled=new URLSearchParams(location.search).has('rabbitGraphProfile');
@@ -3500,6 +3509,7 @@
       const nextWidth = stage.clientWidth;
       if (!nextWidth || nextWidth === availableWidth) return;
       availableWidth=nextWidth;
+      linkLabelSizes.clear();
       const viewport=relationGraphViewport(availableWidth,works.length+1,topology.groups.length>0);
       width=viewport.width;displayScale=viewport.scale;
       layout = graphData.recommendations?relationGraphRecommendationLayout(nodes.length,width)
@@ -3816,7 +3826,7 @@
               bounds.top=Math.min(bounds.top,p.y);bounds.bottom=Math.max(bounds.bottom,p.y);
             }
             const cable={key:cableKey,ids:[a.id,b.id],samples,bounds};
-            renderedCables.set(cableKey,cable);if(denseGraph)renderedCableIndex.add(cable);
+            renderedCables.set(cableKey,cable);if(denseGraph)renderedCableIndex.add(cable,cable.bounds);
           }
           const { sx, sy, ex, ey, cx, cy, c1, c2, ra, rb, len, point, points } = curve;
           const label = linkLabelByEdge.get(l)||null;
@@ -3840,10 +3850,15 @@
           if (label) {
             const nearbyLabelObstacles=frameLabelObstacleIndex?frameLabelObstacleIndex.query(routeBounds):frameLabelObstacles;
             if(!l.labelRoles && label.textContent!==l.label)label.textContent=l.label;
-            label.style.whiteSpace=l.labelRoles?'normal':'nowrap';label.style.borderColor=relationColor;
+            const whiteSpace=l.labelRoles?'normal':'nowrap';
+            if(label.style.whiteSpace!==whiteSpace)label.style.whiteSpace=whiteSpace;
+            if(label.style.borderColor!==relationColor)label.style.borderColor=relationColor;
             const description=l.labelRoles?l.labelRoles.map(item=>item.role+': '+item.title).join(' / '):a.label+' → '+b.label+' · '+l.label;
             if(label.getAttribute('aria-label')!==description){label.removeAttribute('aria-hidden');label.setAttribute('aria-label',description);}
-            const labelWidth=label.offsetWidth,labelHeight=label.offsetHeight;
+            const labelText=l.labelRoles?label.textContent:l.label;
+            const size=relationGraphLabelSize(linkLabelSizes,label,`${labelText}|${whiteSpace}|${graphFont}`,
+              ()=>({width:label.offsetWidth,height:label.offsetHeight}));
+            const labelWidth=size.width,labelHeight=size.height;
             const preferredDistance=arrowMark.total*.5;
             const mark=relationGraphEndMark(curve,preferredDistance,routeSamples);
             const preferred=(l.labelRoles?0:l.pairSize>1?14:0)+(l.targetSlot||0)*22;

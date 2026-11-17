@@ -18,6 +18,30 @@ assert.ok(source.indexOf('const links = relationGraphLinks(nodes, topology);') <
 const context = { relationLabels: { prequel: '전작', sequel: '후속작', side_story: '외전', spin_off: '스핀오프', main_story: '본편' } };
 const viewportSource=source.slice(source.indexOf('  function relationGraphViewport('),source.indexOf('  function loadRelationGraphEngine('));
 vm.createContext(context); vm.runInContext(layout + topology, context);
+const spatialSource=source.slice(source.indexOf('  function relationGraphSpatialIndex('),source.indexOf('  function relationGraphBookCable('));
+vm.runInContext(spatialSource,context);
+{
+  const index=context.relationGraphSpatialIndex();
+  const cable={bounds:{left:0,right:40,top:0,bottom:40}};
+  index.add(cable,cable.bounds);
+  const candidates=index.query({left:10,right:20,top:10,bottom:20});
+  assert.equal(candidates.length,1,'dense cable index retrieves cables by their explicit bounds');
+  assert.equal(candidates[0],cable);
+  assert.ok(source.includes('renderedCableIndex.add(cable,cable.bounds)'),
+    'dense graph stores routed cable bounds in the crossing index');
+
+  const cache=new Map(),label={};
+  let measures=0;
+  const measure=()=>{measures++;return {width:90,height:24};};
+  const first=context.relationGraphLabelSize(cache,label,'caption|nowrap|font',measure);
+  const repeated=context.relationGraphLabelSize(cache,label,'caption|nowrap|font',measure);
+  assert.equal(first.width,90);
+  assert.equal(repeated.height,24);
+  assert.equal(measures,1,'link label metrics are read once while their layout signature stays stable');
+  context.relationGraphLabelSize(cache,label,'caption|normal|font',measure);
+  assert.equal(measures,2,'responsive label layout changes trigger a fresh size measurement');
+}
+console.log('PASS dense cable bounds and cached relation-label measurements');
 for(const width of [240,320,600,1000]) {
   const rec=context.relationGraphRecommendationLayout(11,width),boxes=[];
   rec.positions.forEach(([x,y],i)=>{
