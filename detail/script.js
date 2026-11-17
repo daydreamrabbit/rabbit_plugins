@@ -2081,6 +2081,28 @@
     return {...fallback,height:Math.max(before.length,after.length)*pitch+70,positions:nodes.map(n=>positions.get(n.id))};
   }
 
+  function relationGraphGroupedOrbitLayout(nodes,width) {
+    const focus=nodes.find(n=>n.current),peers=nodes.filter(n=>!n.current);
+    if(!focus || peers.length<4 || peers.length>5 || width<430)return null;
+    const fallback=relationGraphLayout(nodes.length,width),reach=Math.min(190,(width-fallback.labelWidth-40)/2);
+    if(reach<112)return null;
+    const verticalReach=135+peers.length*16;
+    const angles=peers.map((_,i)=>Math.PI/3+i*(Math.PI*4/3)/(peers.length-1));
+    const slots=angles.map((angle,index)=>({angle,index})).sort((a,b)=>{
+      const distance=angle=>Math.abs(Math.atan2(Math.sin(angle-Math.PI),Math.cos(angle-Math.PI)));
+      return distance(a.angle)-distance(b.angle) || Number(Math.sin(a.angle)>=0)-Number(Math.sin(b.angle)>=0);
+    });
+    const roleOrder={prequel:0,original:1,side_story:2,spin_off:3,main_story:4,sequel:5};
+    const ordered=[...peers].sort((a,b)=>(roleOrder[a.relationType]??3)-(roleOrder[b.relationType]??3)
+      || String(a.label||a.id).localeCompare(String(b.label||b.id),'ko'));
+    const positions=new Map([[focus.id,[0,0]]]);
+    ordered.forEach((peer,i)=>{
+      const angle=slots[i].angle;
+      positions.set(peer.id,[Math.cos(angle)*reach,Math.sin(angle)*verticalReach]);
+    });
+    return {height:verticalReach*2+218,labelWidth:fallback.labelWidth,positions:nodes.map(n=>positions.get(n.id))};
+  }
+
   function relationGraphViewport(availableWidth,count,grouped=false) {
     const maximum=count>8?1.1:1.25;
     // Keep a wide grouped graph's columns when enlarging its contents.
@@ -2187,6 +2209,11 @@
         if(ordinary.length>1 && ordinary.slice(1).every(n=>n.relationType==='prequel')) {
           const branch=relationGraphBranchLayout(ordinary,panelWidth,[]);
           panel.positions=branch.positions;panel.height=branch.height;
+          continue;
+        }
+        const orbit=relationGraphGroupedOrbitLayout(ordinary,panelWidth);
+        if(orbit) {
+          panel.positions=orbit.positions;panel.height=orbit.height;
           continue;
         }
         const cols = Math.max(1, Math.min(4, ordinary.length, Math.floor((panelWidth - 16) / 126)));
