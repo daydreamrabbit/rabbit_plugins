@@ -2603,11 +2603,13 @@
     return n.captionRecipe && !n.captionRecipe.x && !dragging?n.captionRecipe:relationGraphCaptionPosition(n,neighbours,limits);
   }
 
+  const relationGraphCablePorts=Array.from({length:9},(_,i)=>Object.freeze({x:Math.cos(-i*Math.PI/8),y:Math.sin(-i*Math.PI/8)}));
+
   function relationGraphBookCable(a,b,link,group) {
     // End each cable on the visible cover ring, rather than outside its halo.
     const dx=b.x-a.x,dy=b.y-a.y,distance=Math.hypot(dx,dy)||1,ra=a.current?32:26,rb=b.current?32:26;
     if(distance<88)return {sx:a.x,sy:a.y,ex:b.x,ey:b.y,cx:(a.x+b.x)/2,cy:(a.y+b.y)/2,len:0,ra,rb,point:t=>({x:a.x+dx*t,y:a.y+dy*t})};
-    const ports=Array.from({length:9},(_,i)=>({x:Math.cos(-i*Math.PI/8),y:Math.sin(-i*Math.PI/8)}));
+    const ports=relationGraphCablePorts;
     // Side ports need enough clearance to turn outside the titles below covers.
     const state=link.state||{},arm=Math.max(76,Math.min(100,(distance-ra-rb)*.32));
     const gap=Math.max(0,distance-ra-rb),progress=Math.max(0,Math.min(1,(gap-40)/140));
@@ -2627,13 +2629,10 @@
       return Math.hypot(p.x-old.x,p.y-old.y)<6 && Boolean(p.captionAbove)===old.captionAbove
         && (p.captionTop||0)===old.captionTop && (p.labelWidth||0)===old.labelWidth && (p.boxHeight||0)===old.boxHeight;
     });
-    let cached=unchanged && state.sourcePort!==undefined && state.targetPort!==undefined;
-    const labelBox=n=>n.captionAbove?{x:n.x,y:n.y+(n.captionTop||-96)+32,labelWidth:n.labelWidth||112,boxHeight:Math.max(1,-40-(n.captionTop||-96)-8)}
-      :{x:n.x+(n.captionOffset||0),y:n.y+64,labelWidth:n.labelWidth||112,boxHeight:Math.max(1,(n.boxHeight||104)-64)};
-    const obstacles=[];
-    for(const n of link.obstacles||[])if(n.id!==a.id && n.id!==b.id)obstacles.push(n);
-    if(!a.current)obstacles.push(labelBox(a));
-    if(!b.current)obstacles.push(labelBox(b));
+    const cached=unchanged && state.sourcePort!==undefined && state.targetPort!==undefined;
+    const cachedStraight=unchanged && state.straight===true;
+    const saveGeometry=()=>geometry.map(p=>({x:p.x,y:p.y,captionAbove:Boolean(p.captionAbove),
+      captionTop:p.captionTop||0,labelWidth:p.labelWidth||0,boxHeight:p.boxHeight||0}));
     const sx=a.x+dx/distance*ra,sy=a.y+dy/distance*ra,ex=b.x-dx/distance*rb,ey=b.y-dy/distance*rb;
     // A shallow arc softens the cable without retaining large bends at close range.
     if(state.bowSign===undefined)state.bowSign=a.current && dx>Math.abs(dy)*.3?-1:1;
@@ -2643,31 +2642,6 @@
     const straight={sx,sy,ex,ey,c1,c2,len:distance,ra,rb,
       point:t=>({x:(1-t)**3*sx+3*(1-t)**2*t*c1.x+3*(1-t)*t*t*c2.x+t**3*ex,
         y:(1-t)**3*sy+3*(1-t)**2*t*c1.y+3*(1-t)*t*t*c2.y+t**3*ey})};
-    const gentleSamples=Array.from({length:33},(_,i)=>straight.point(i/32));
-    const gentleBounds=gentleSamples.reduce((bounds,p)=>({left:Math.min(bounds.left,p.x),right:Math.max(bounds.right,p.x),
-      top:Math.min(bounds.top,p.y),bottom:Math.max(bounds.bottom,p.y)}),{left:Infinity,right:-Infinity,top:Infinity,bottom:-Infinity});
-    const blockedStraight=obstacles.some(n=>gentleSamples.slice(1,-1).some(p=>
-      p.x>n.x-n.labelWidth/2-5 && p.x<n.x+n.labelWidth/2+5 && p.y>n.y-32 && p.y<n.y-24+n.boxHeight+5));
-    const checkSoftIntersections=link.frame===undefined || state.sourcePort===undefined || link.frame%4===0;
-    const sharedStraight=checkSoftIntersections && (link.cables||[]).some(cable=>{
-      if((cable.anchors||[]).some(anchor=>{
-        if(anchor.id===a.id && a.current)return false;
-        const tip=anchor.id===a.id?{x:sx,y:sy}:anchor.id===b.id?{x:ex,y:ey}:null;
-        return tip && Math.hypot(tip.x-anchor.point.x,tip.y-anchor.point.y)<12;
-      }))return true;
-      const bounds=cable.bounds;
-      if(bounds && (bounds.right+12<gentleBounds.left || bounds.left-12>gentleBounds.right
-        || bounds.bottom+12<gentleBounds.top || bounds.top-12>gentleBounds.bottom))return false;
-      return gentleSamples.filter((_,i)=>i>=4 && i<=28 && i%2===0).some(p=>
-        !cable.shared.some(n=>Math.hypot(p.x-n.x,p.y-n.y)<42) && cable.samples.some(q=>Math.hypot(p.x-q.x,p.y-q.y)<12));
-    });
-    const outsideStraight=link.limits && gentleSamples.some(p=>
-      Math.abs(p.x)>link.limits.width/2-5 || Math.abs(p.y)>link.limits.height/2-5);
-    if(!blockedStraight && !sharedStraight && !outsideStraight && (checkSoftIntersections || state.sourcePort===undefined || state.targetPort===undefined)) {
-      state.sourceAngle=Math.atan2(dy,dx);state.targetAngle=Math.atan2(-dy,-dx);
-      delete state.sourcePort;delete state.targetPort;state.routeBend=0;
-      return straight;
-    }
     const make=(p,q,bend=0)=>{
       const blendPort=(port,ux,uy)=>{
         const x=ux+(port.x-ux)*curvature,y=uy+(port.y-uy)*curvature,length=Math.hypot(x,y)||1;
@@ -2709,8 +2683,52 @@
       const next=previous+delta*.25;
       return Math.cos(next)*ux+Math.sin(next)*uy<-.05?desired:next;
     };
-    const saveGeometry=()=>geometry.map(p=>({x:p.x,y:p.y,captionAbove:Boolean(p.captionAbove),
-      captionTop:p.captionTop||0,labelWidth:p.labelWidth||0,boxHeight:p.boxHeight||0}));
+    const checkSoftIntersections=link.frame===undefined || !unchanged || link.frame%4===0;
+    // Idle drift moves covers by tiny increments. Recheck a retained route on
+    // the existing soft-intersection cadence; otherwise avoid rebuilding both
+    // 33-point straight samples and 25-point collision samples on every frame.
+    if(cached && link.idle && !checkSoftIntersections) {
+      const p=ports[state.sourcePort],q=ports[state.targetPort];
+      if(p && q) {
+        const bend=state.routeBend||0;
+        state.sourceAngle=smoothAngle(state.sourceAngle,Math.atan2(p.y,p.x),dx/distance,dy/distance);
+        state.targetAngle=smoothAngle(state.targetAngle,Math.atan2(q.y,q.x),-dx/distance,-dy/distance);
+        return make({x:Math.cos(state.sourceAngle),y:Math.sin(state.sourceAngle)},
+          {x:Math.cos(state.targetAngle),y:Math.sin(state.targetAngle)},bend);
+      }
+    }
+    if(cachedStraight && link.idle && !checkSoftIntersections)return straight;
+    const labelBox=n=>n.captionAbove?{x:n.x,y:n.y+(n.captionTop||-96)+32,labelWidth:n.labelWidth||112,boxHeight:Math.max(1,-40-(n.captionTop||-96)-8)}
+      :{x:n.x+(n.captionOffset||0),y:n.y+64,labelWidth:n.labelWidth||112,boxHeight:Math.max(1,(n.boxHeight||104)-64)};
+    const obstacles=[];
+    for(const n of link.obstacles||[])if(n.id!==a.id && n.id!==b.id)obstacles.push(n);
+    if(!a.current)obstacles.push(labelBox(a));
+    if(!b.current)obstacles.push(labelBox(b));
+    const gentleSamples=Array.from({length:33},(_,i)=>straight.point(i/32));
+    const gentleBounds=gentleSamples.reduce((bounds,p)=>({left:Math.min(bounds.left,p.x),right:Math.max(bounds.right,p.x),
+      top:Math.min(bounds.top,p.y),bottom:Math.max(bounds.bottom,p.y)}),{left:Infinity,right:-Infinity,top:Infinity,bottom:-Infinity});
+    const blockedStraight=obstacles.some(n=>gentleSamples.slice(1,-1).some(p=>
+      p.x>n.x-n.labelWidth/2-5 && p.x<n.x+n.labelWidth/2+5 && p.y>n.y-32 && p.y<n.y-24+n.boxHeight+5));
+    const sharedStraight=checkSoftIntersections && (link.cables||[]).some(cable=>{
+      if((cable.anchors||[]).some(anchor=>{
+        if(anchor.id===a.id && a.current)return false;
+        const tip=anchor.id===a.id?{x:sx,y:sy}:anchor.id===b.id?{x:ex,y:ey}:null;
+        return tip && Math.hypot(tip.x-anchor.point.x,tip.y-anchor.point.y)<12;
+      }))return true;
+      const bounds=cable.bounds;
+      if(bounds && (bounds.right+12<gentleBounds.left || bounds.left-12>gentleBounds.right
+        || bounds.bottom+12<gentleBounds.top || bounds.top-12>gentleBounds.bottom))return false;
+      return gentleSamples.filter((_,i)=>i>=4 && i<=28 && i%2===0).some(p=>
+        !cable.shared.some(n=>Math.hypot(p.x-n.x,p.y-n.y)<42) && cable.samples.some(q=>Math.hypot(p.x-q.x,p.y-q.y)<12));
+    });
+    const outsideStraight=link.limits && gentleSamples.some(p=>
+      Math.abs(p.x)>link.limits.width/2-5 || Math.abs(p.y)>link.limits.height/2-5);
+    if(!blockedStraight && !sharedStraight && !outsideStraight && (checkSoftIntersections || !cachedStraight)) {
+      state.sourceAngle=Math.atan2(dy,dx);state.targetAngle=Math.atan2(-dy,-dx);
+      delete state.sourcePort;delete state.targetPort;state.routeBend=0;state.straight=true;state.routingGeometry=saveGeometry();
+      return straight;
+    }
+    state.straight=false;
     const routeIsClear=curve=>{
       const samples=Array.from({length:25},(_,k)=>curve.point(k/24));
       const bounds=samples.reduce((value,p)=>({left:Math.min(value.left,p.x),right:Math.max(value.right,p.x),
@@ -2769,7 +2787,7 @@
           state.routingGeometry=saveGeometry();
           return previous;
         }
-        cached=false;
+        state.straight=false;
       }
     }
     let selected;
@@ -2827,10 +2845,10 @@
       if(!selected || score<selected.score)selected={p,q,i,j,score,fan,bend,overlap};
       }
     }));
-    if(cached && !selected){delete state.sourcePort;delete state.targetPort;return relationGraphBookCable(a,b,link,group);}
+    if(cached && !selected){delete state.sourcePort;delete state.targetPort;delete state.routingGeometry;delete state.straight;return relationGraphBookCable(a,b,link,group);}
     state.sourceAngle=smoothAngle(state.sourceAngle,Math.atan2(selected.p.y,selected.p.x),dx/distance,dy/distance);
     state.targetAngle=smoothAngle(state.targetAngle,Math.atan2(selected.q.y,selected.q.x),-dx/distance,-dy/distance);
-    state.sourcePort=selected.i;state.targetPort=selected.j;
+    state.sourcePort=selected.i;state.targetPort=selected.j;state.straight=false;
     state.routeBend=selected.bend;
     state.routingGeometry=saveGeometry();
     return make({x:Math.cos(state.sourceAngle),y:Math.sin(state.sourceAngle)},{x:Math.cos(state.targetAngle),y:Math.sin(state.targetAngle)},state.routeBend);
@@ -2945,6 +2963,12 @@
       cumulative[i+1]=cumulative[i]+lengths[i];
     }
     return {lengths,cumulative,total:cumulative[40]};
+  }
+
+  function relationGraphArrowMark(curve) {
+    const p=curve.point(1),before=curve.point(.995),after=curve.point(1);
+    const length=Math.hypot(after.x-before.x,after.y-before.y)||1;
+    return {...p,t:1,total:0,tx:(after.x-before.x)/length,ty:(after.y-before.y)/length};
   }
 
   function relationGraphEndMark(curve,distance,path=relationGraphCurveSamples(curve)) {
@@ -3763,8 +3787,8 @@
           const label = linkLabelByEdge.get(l)||null;
           if (label) label.hidden = len <= ra + rb;
           if (len <= ra + rb) return;
-          const routeSamples=(l.kind || label)?relationGraphCurveSamples(curve):null;
-          const arrowMark=routeSamples?relationGraphEndMark(curve,0,routeSamples):null;
+          const routeSamples=label?relationGraphCurveSamples(curve):null;
+          const arrowMark=routeSamples?relationGraphEndMark(curve,0,routeSamples):l.kind?relationGraphArrowMark(curve):null;
           const active = frameHighlightedNode;
           const hot = highlighted === a.id || highlighted === b.id
             || (active?.groupId && (active.groupId === l.groupId || active.groupId === b.id));
@@ -3877,7 +3901,10 @@
           paintNodes();
           if(profileEnabled) {
             const now=performance.now(),mode=drag?.moved?'drag':'idle';
-            if(profile.last && profile.mode===mode && profile[mode].length<3000)profile[mode].push(now-profile.last);
+            if(profile.last && profile.mode===mode) {
+              profile[mode].push(now-profile.last);
+              if(profile[mode].length>240)profile[mode].shift();
+            }
             profile.last=now;profile.mode=mode;
             if(now-profile.published>1000){profile.published=now;stage.dataset.frameProfile=JSON.stringify({idle:relationGraphFrameStats(profile.idle),drag:relationGraphFrameStats(profile.drag)});}
           }

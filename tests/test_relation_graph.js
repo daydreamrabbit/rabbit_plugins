@@ -545,7 +545,7 @@ for(const id of ['0','1','7','12'])for(let time=0;time<120;time+=.1) {
 assert.notDeepEqual(context.relationGraphDrift('0',10),context.relationGraphDrift('1',10),'works drift independently');
 assert.equal(context.relationGraphCanDrift({id:'wan'}),false,'ordinary spin-off does not move its cable at idle');
 assert.equal(context.relationGraphCanDrift({groupId:'anthology'}),true,'soft group members retain gentle floating');
-assert.equal(context.relationGraphCanDrift({id:'recommendation'},true),true,'recommendation works retain gentle idle motion');
+assert.equal(context.relationGraphCanDrift({id:'recommendation'},true),false,'recommendation works stay fixed instead of adding motion cost');
 assert.equal(context.relationGraphCanDrift({groupId:'family',current:true}),false,'current work has no automatic drift');
 {
   const blocked={n:{x:-60,y:40},targetX:-100,targetY:100,vx:-12,vy:15};
@@ -740,6 +740,28 @@ const sharedReverse=context.relationGraphCurve(positions['1'],positions['0'],gro
 for(const cable of [sharedForward,sharedReverse]) {
   const tip=context.relationGraphEndMark(cable,0);
   assert.ok(Math.hypot(tip.x-cable.ex,tip.y-cable.ey)<1e-9,'arrow tip reaches the cable endpoint');
+  const fastTip=context.relationGraphArrowMark(cable);
+  assert.ok(Math.hypot(fastTip.x-cable.ex,fastTip.y-cable.ey)<1e-9 && Math.abs(Math.hypot(fastTip.tx,fastTip.ty)-1)<1e-9,
+    'arrow-only links use an endpoint tangent without sampling the full curve');
+}
+{
+  const a={id:'perf-a',x:-180,y:0,labelWidth:80,boxHeight:100},b={id:'perf-b',x:180,y:0,labelWidth:80,boxHeight:100};
+  const blocker={id:'perf-blocker',x:0,y:0,labelWidth:190,boxHeight:110};
+  const state={},link={state,frame:1,idle:true,limits:{width:1000,height:800},obstacles:[blocker],spokes:[],cables:[],adjacency:{}};
+  const measuredMath=Object.create(Math);let hypotCalls=0;
+  measuredMath.hypot=(...values)=>{hypotCalls++;return Math.hypot(...values);};context.Math=measuredMath;
+  try {
+    context.relationGraphBookCable(a,b,link,null);
+    assert.ok(state.sourcePort!==undefined && state.targetPort!==undefined,'the blocked route is cached after the first full validation');
+    const fullPassCalls=hypotCalls;hypotCalls=0;
+    context.relationGraphBookCable(a,b,{...link,frame:2},null);
+    assert.ok(hypotCalls<fullPassCalls*.25,'idle cached routes skip dense per-frame collision checks');
+    const straightState={},clearLink={state:straightState,frame:1,idle:true,limits:{width:1000,height:800},obstacles:[],spokes:[],cables:[],adjacency:{}};
+    context.relationGraphBookCable(a,b,clearLink,null);
+    assert.equal(straightState.straight,true,'a clear direct cable records its validated geometry');
+    hypotCalls=0;context.relationGraphBookCable(a,b,{...clearLink,frame:2},null);
+    assert.ok(hypotCalls<8,'idle direct cables also bypass repeated curve and obstacle sampling');
+  } finally { delete context.Math; }
 }
 for(const [a,b] of [[{id:'0',x:0,y:0},{id:'1',x:0,y:360}],[{id:'0',x:0,y:360},{id:'1',x:0,y:0}]]) {
   const cable=context.relationGraphCurve(a,b,null,{kind:'main_story'});
