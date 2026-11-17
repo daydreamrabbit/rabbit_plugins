@@ -2450,7 +2450,16 @@
     return anchoredExternal?{speed:.000008,trail:.07}:{speed:.00003,trail:.12};
   }
 
-  function relationGraphEdgeColors(link,a,b,accentColor='') {
+  const relationGraphSemanticTones=Object.freeze({
+    side_story:1,sequel:1,
+    main_story:2,original:2,prequel:2,
+    spin_off:3,adaptation:3,
+  });
+
+  function relationGraphEdgeColors(link,a,b,accentColor='',toneColors=[]) {
+    const toneIndex=relationGraphSemanticTones[link.kind];
+    const semanticColor=Number.isInteger(toneIndex)?toneColors[toneIndex]:null;
+    if(link.kind && semanticColor)return {start:semanticColor,end:semanticColor,relation:semanticColor};
     const colorA=a.inkColor||accentColor,colorB=b.inkColor||accentColor;
     const crossesGroup=Boolean(link.kind && Boolean(a.groupId)!==Boolean(b.groupId));
     const outside=crossesGroup?(a.groupId?b:a):null;
@@ -3552,6 +3561,9 @@
     relationGraph?.destroy();
     const stage = $('[data-relation-graph-stage]'), status = $('[data-relation-graph-status]');
     stage.replaceChildren(); status.hidden = true;
+    const toneProbe=document.createElement('span');
+    toneProbe.style.cssText='position:absolute;visibility:hidden;pointer-events:none;width:0;height:0;';
+    stage.append(toneProbe);
     const motionEnabled=relationGraphSettings?.motionEnabled!==false;
     stage.dataset.motion=String(motionEnabled);
     const displaySettings=relationGraphSettings && {...relationGraphSettings,enabled:graphData.recommendations?relationGraphSettings.recommendationsEnabled:relationGraphSettings.enabled};
@@ -3579,7 +3591,7 @@
     preview.setAttribute('role', 'tooltip'); preview.hidden = true; content.append(preview);
     let previewNode = null, previewWidth = 270, previewHeight = 180;
     let graph = null, dead = false, resize = null, visibility = null, drag = null;
-    let width = 0, height = 0, availableWidth=0,displayScale=1, layout = null, lineColor = '', accentColor = '', suppressClick = false;
+    let width = 0, height = 0, availableWidth=0,displayScale=1, layout = null, lineColor = '', accentColor = '', toneColors=[], suppressClick = false;
     let highlighted = null, stageVisible = true, labelBounds = [], frameLabelObstacles = [], graphFont = '';
     let frameShownNodes=[],frameBookNodes=[],frameBookSpokes=[],frameHighlightedNode=null;
     let frameBookNodeIndex=null,frameBookSpokeIndex=null,frameLabelObstacleIndex=null;
@@ -3610,6 +3622,7 @@
       if (dead) return; dead = true; resize?.disconnect(); visibility?.disconnect();
       themeObserver.disconnect(); detachObserver.disconnect();
       hidePreview();
+      toneProbe.remove();
       document.removeEventListener('visibilitychange', updateAnimation);
       graph?._destructor();
     } };
@@ -3657,6 +3670,10 @@
     function readTheme() {
       lineColor = getComputedStyle(stage).color;
       accentColor = getComputedStyle(root).getPropertyValue('--ds-accent').trim() || lineColor;
+      toneColors=Array.from({length:4},(_,index)=>{
+        toneProbe.style.color=`var(--graph-tone-${index})`;
+        return getComputedStyle(toneProbe).color||accentColor;
+      });
       graphFont = getComputedStyle(root).fontFamily;
       for (const n of nodes) n.inkColor = n.group ? getComputedStyle(n.outlineElement).stroke : getComputedStyle(n.art).borderTopColor;
       accentColor = nodes[0].inkColor || accentColor;
@@ -4003,7 +4020,7 @@
           const active = frameHighlightedNode;
           const hot = highlighted === a.id || highlighted === b.id
             || (active?.groupId && (active.groupId === l.groupId || active.groupId === b.id || active.groupId === l.aggregateGroupId));
-          const edgeColors=relationGraphEdgeColors(l,a,b,accentColor);
+          const edgeColors=relationGraphEdgeColors(l,a,b,accentColor,toneColors);
           const relationColor=edgeColors.relation;
           c.save(); c.beginPath(); c.moveTo(sx, sy); c.lineJoin = 'round'; c.lineCap = 'round';
           if (points) for (const p of points.slice(1)) c.lineTo(p.x, p.y);

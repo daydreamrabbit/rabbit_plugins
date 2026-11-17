@@ -592,13 +592,35 @@ assert.deepEqual(context.relationGraphCableMotion({kind:'sequel',groupId:'adapta
 assert.deepEqual(context.relationGraphCableMotion({kind:'side_story'},cableNodes[0],cableNodes[1],cableAnchors),
   {speed:.00003,trail:.12},'ordinary external connections retain the usual moving light');
 assert.deepEqual(context.relationGraphEdgeColors({kind:'side_story'},
-  {id:'ice',inkColor:'rgb(170,130,255)'},{id:'chapter-1',groupId:'adaptations',inkColor:'rgb(214,163,77)'},'white'),
-  {start:'rgb(170,130,255)',end:'rgb(170,130,255)',relation:'rgb(170,130,255)'},
-  'a cable from an external work into a group uses the outside work color instead of copying the group tone');
+  {id:'ice',inkColor:'ice-tone'},{id:'chapter-1',groupId:'adaptations',inkColor:'group-tone'},'white',
+  ['accent-tone','side-story-tone','main-story-tone','adaptation-tone']),
+  {start:'side-story-tone',end:'side-story-tone',relation:'side-story-tone'},
+  'external cables use their registered side-story tone instead of the endpoint cover color');
 assert.deepEqual(context.relationGraphEdgeColors({kind:'sequel',groupId:'adaptations'},
-  {id:'chapter-1',groupId:'adaptations',inkColor:'rgb(214,163,77)'},{id:'chapter-2',groupId:'adaptations',inkColor:'rgb(214,163,77)'},'white'),
-  {start:'rgb(214,163,77)',end:'rgb(214,163,77)',relation:'rgb(214,163,77)'},
-  'connections inside the adaptation group keep its own tone');
+  {id:'chapter-1',groupId:'adaptations',inkColor:'group-tone'},{id:'chapter-2',groupId:'adaptations',inkColor:'group-tone'},'white',
+  ['accent-tone','side-story-tone','main-story-tone','adaptation-tone']),
+  {start:'side-story-tone',end:'side-story-tone',relation:'side-story-tone'},
+  'internal sequel lines keep the sequel color instead of inheriting the adaptation group color');
+assert.deepEqual(context.relationGraphEdgeColors({kind:'main_story'},
+  {id:'ice',inkColor:'ice-tone'},{id:'chapter-1',groupId:'adaptations',inkColor:'group-tone'},'white',
+  ['accent-tone','side-story-tone','main-story-tone','adaptation-tone']),
+  {start:'main-story-tone',end:'main-story-tone',relation:'main-story-tone'},
+  'main-story lines use the registered main-story tone');
+for(const kind of ['original','prequel'])assert.deepEqual(context.relationGraphEdgeColors({kind},
+  {id:'a',inkColor:'endpoint-a'},{id:'b',groupId:'adaptations',inkColor:'endpoint-b'},'white',
+  ['accent-tone','side-story-tone','main-story-tone','adaptation-tone']),
+  {start:'main-story-tone',end:'main-story-tone',relation:'main-story-tone'},
+  `${kind} lines use the registered main-story tone`);
+for(const kind of ['spin_off','adaptation'])assert.deepEqual(context.relationGraphEdgeColors({kind},
+  {id:'a',inkColor:'endpoint-a'},{id:'b',groupId:'adaptations',inkColor:'endpoint-b'},'white',
+  ['accent-tone','side-story-tone','main-story-tone','adaptation-tone']),
+  {start:'adaptation-tone',end:'adaptation-tone',relation:'adaptation-tone'},
+  `${kind} lines use the registered spin-off/adaptation tone`);
+assert.deepEqual(context.relationGraphEdgeColors({kind:'series'},
+  {id:'a',inkColor:'endpoint-a'},{id:'b',groupId:'adaptations',inkColor:'endpoint-b'},'white',
+  ['accent-tone','side-story-tone','main-story-tone','adaptation-tone']),
+  {start:'endpoint-a',end:'endpoint-a',relation:'endpoint-a'},
+  'unmapped relationship kinds retain the outside endpoint fallback');
 {
   const a={id:'ice',x:-180,y:0,labelWidth:80,boxHeight:100};
   const b={id:'chapter-1',x:180,y:0,labelWidth:80,boxHeight:100};
