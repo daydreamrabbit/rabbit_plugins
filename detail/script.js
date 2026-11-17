@@ -2424,8 +2424,11 @@
       const sample=i=>{const value=Math.sin(i*127.1+s*311.7)*43758.5453;return (value-Math.floor(value))*2-1;};
       return sample(cell)*(1-ease)+sample(cell+1)*ease;
     };
-    return {x:noise(time/6+seed%23,seed)*3.1+noise(time/13,seed+7)*.9,
-      y:noise(time/7.5+seed%17,seed+19)*2.5+noise(time/17,seed+31)*.7};
+    // Keep the idle float visible but small enough that linked cables read as
+    // anchored. Large independent offsets made relation lines look like they
+    // were twitching even though the group motion was intended to be gentle.
+    return {x:noise(time/9+seed%23,seed)*.78+noise(time/18,seed+7)*.22,
+      y:noise(time/11+seed%17,seed+19)*.62+noise(time/22,seed+31)*.18};
   }
 
   function relationGraphCanDrift(n) {
@@ -4026,16 +4029,16 @@
             c.strokeStyle = relationColor; c.globalAlpha = 1; c.lineWidth = 1.8; c.stroke(); c.restore();
           }
           if (!reducedMotion && !(l.pairIndex>0)) {
-            const t = (performance.now() * .000045 + (Number(b.id) || 0) * .173) % 1;
-            const tail = Math.max(0, t - .18), p = point(t), q = point(tail);
+            const t = (performance.now() * .00003 + (Number(b.id) || 0) * .173) % 1;
+            const tail = Math.max(0, t - .12), p = point(t), q = point(tail);
             const glow = c.createLinearGradient(q.x, q.y, p.x + .01, p.y + .01);
             glow.addColorStop(0, 'transparent'); glow.addColorStop(1, relationColor);
             c.beginPath(); c.moveTo(q.x, q.y);
             for (let i = 1; i <= 8; i++) { const v = point(tail + (t-tail)*i/8); c.lineTo(v.x, v.y); }
             const pulse=Math.sin(t*Math.PI);
-            c.strokeStyle=glow;c.globalAlpha=pulse*.28;c.lineWidth=10;c.shadowColor=relationColor;c.shadowBlur=12;c.stroke();
-            c.globalAlpha=pulse*(hot?1:.9);c.lineWidth=3.6;c.stroke();
-            c.beginPath();c.arc(p.x,p.y,hot?4.5:3.6,0,Math.PI*2);c.fillStyle=relationColor;c.fill();
+            c.strokeStyle=glow;c.globalAlpha=pulse*.24;c.lineWidth=7;c.shadowColor=relationColor;c.shadowBlur=8;c.stroke();
+            c.globalAlpha=pulse*(hot?1:.82);c.lineWidth=2.8;c.stroke();
+            c.beginPath();c.arc(p.x,p.y,hot?4:3.2,0,Math.PI*2);c.fillStyle=relationColor;c.fill();
             c.shadowBlur=0;c.beginPath();c.arc(p.x,p.y,1.5,0,Math.PI*2);c.fillStyle='#fff';c.globalAlpha=pulse*.95;c.fill();
           }
           c.restore();

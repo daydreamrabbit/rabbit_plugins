@@ -565,8 +565,8 @@ assert.equal(dented.outline.length,64,'continuous boundary samples permit dents'
 console.log('PASS free pointer tracking, local body pressure, deformation, bounded motion, and settling');
 for(const id of ['0','1','7','12'])for(let time=0;time<120;time+=.1) {
   const p=context.relationGraphDrift(id,time),q=context.relationGraphDrift(id,time+1/60);
-  assert.ok(Math.abs(p.x)<=4.001 && Math.abs(p.y)<=3.201,'floating stays within a few pixels');
-  assert.ok(Math.hypot(q.x-p.x,q.y-p.y)<.06,'floating has no frame-to-frame jumps');
+  assert.ok(Math.abs(p.x)<=1.001 && Math.abs(p.y)<=.801,'idle float stays subtle so linked cables remain visually anchored');
+  assert.ok(Math.hypot(q.x-p.x,q.y-p.y)<.02,'floating has no frame-to-frame jumps');
 }
 assert.notDeepEqual(context.relationGraphDrift('0',10),context.relationGraphDrift('1',10),'works drift independently');
 assert.equal(context.relationGraphCanDrift({id:'wan'}),false,'ordinary spin-off does not move its cable at idle');
