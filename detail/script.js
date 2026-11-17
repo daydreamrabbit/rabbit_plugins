@@ -2627,7 +2627,7 @@
       return Math.hypot(p.x-old.x,p.y-old.y)<6 && Boolean(p.captionAbove)===old.captionAbove
         && (p.captionTop||0)===old.captionTop && (p.labelWidth||0)===old.labelWidth && (p.boxHeight||0)===old.boxHeight;
     });
-    const cached=unchanged && state.sourcePort!==undefined && state.targetPort!==undefined;
+    let cached=unchanged && state.sourcePort!==undefined && state.targetPort!==undefined;
     const labelBox=n=>n.captionAbove?{x:n.x,y:n.y+(n.captionTop||-96)+32,labelWidth:n.labelWidth||112,boxHeight:Math.max(1,-40-(n.captionTop||-96)-8)}
       :{x:n.x+(n.captionOffset||0),y:n.y+64,labelWidth:n.labelWidth||112,boxHeight:Math.max(1,(n.boxHeight||104)-64)};
     const obstacles=[];
@@ -2644,20 +2644,26 @@
       point:t=>({x:(1-t)**3*sx+3*(1-t)**2*t*c1.x+3*(1-t)*t*t*c2.x+t**3*ex,
         y:(1-t)**3*sy+3*(1-t)**2*t*c1.y+3*(1-t)*t*t*c2.y+t**3*ey})};
     const gentleSamples=Array.from({length:33},(_,i)=>straight.point(i/32));
+    const gentleBounds=gentleSamples.reduce((bounds,p)=>({left:Math.min(bounds.left,p.x),right:Math.max(bounds.right,p.x),
+      top:Math.min(bounds.top,p.y),bottom:Math.max(bounds.bottom,p.y)}),{left:Infinity,right:-Infinity,top:Infinity,bottom:-Infinity});
     const blockedStraight=obstacles.some(n=>gentleSamples.slice(1,-1).some(p=>
       p.x>n.x-n.labelWidth/2-5 && p.x<n.x+n.labelWidth/2+5 && p.y>n.y-32 && p.y<n.y-24+n.boxHeight+5));
-    const sharedStraight=(link.cables||[]).some(cable=>{
+    const checkSoftIntersections=link.frame===undefined || state.sourcePort===undefined || link.frame%4===0;
+    const sharedStraight=checkSoftIntersections && (link.cables||[]).some(cable=>{
       if((cable.anchors||[]).some(anchor=>{
         if(anchor.id===a.id && a.current)return false;
         const tip=anchor.id===a.id?{x:sx,y:sy}:anchor.id===b.id?{x:ex,y:ey}:null;
         return tip && Math.hypot(tip.x-anchor.point.x,tip.y-anchor.point.y)<12;
       }))return true;
+      const bounds=cable.bounds;
+      if(bounds && (bounds.right+12<gentleBounds.left || bounds.left-12>gentleBounds.right
+        || bounds.bottom+12<gentleBounds.top || bounds.top-12>gentleBounds.bottom))return false;
       return gentleSamples.filter((_,i)=>i>=4 && i<=28 && i%2===0).some(p=>
         !cable.shared.some(n=>Math.hypot(p.x-n.x,p.y-n.y)<42) && cable.samples.some(q=>Math.hypot(p.x-q.x,p.y-q.y)<12));
     });
     const outsideStraight=link.limits && gentleSamples.some(p=>
       Math.abs(p.x)>link.limits.width/2-5 || Math.abs(p.y)>link.limits.height/2-5);
-    if(!blockedStraight && !sharedStraight && !outsideStraight) {
+    if(!blockedStraight && !sharedStraight && !outsideStraight && (checkSoftIntersections || state.sourcePort===undefined || state.targetPort===undefined)) {
       state.sourceAngle=Math.atan2(dy,dx);state.targetAngle=Math.atan2(-dy,-dx);
       delete state.sourcePort;delete state.targetPort;state.routeBend=0;
       return straight;
@@ -2697,6 +2703,75 @@
       }
       return {sx,sy,ex,ey,c1,c2,len:distance,ra,rb,point:t=>({x:(1-t)**3*sx+3*(1-t)**2*t*c1.x+3*(1-t)*t*t*c2.x+t**3*ex,y:(1-t)**3*sy+3*(1-t)**2*t*c1.y+3*(1-t)*t*t*c2.y+t**3*ey})};
     };
+    const smoothAngle=(previous,desired,ux,uy)=>{
+      if(previous===undefined || Math.cos(previous)*ux+Math.sin(previous)*uy<-.1)return desired;
+      const delta=Math.atan2(Math.sin(desired-previous),Math.cos(desired-previous));
+      const next=previous+delta*.25;
+      return Math.cos(next)*ux+Math.sin(next)*uy<-.05?desired:next;
+    };
+    const saveGeometry=()=>geometry.map(p=>({x:p.x,y:p.y,captionAbove:Boolean(p.captionAbove),
+      captionTop:p.captionTop||0,labelWidth:p.labelWidth||0,boxHeight:p.boxHeight||0}));
+    const routeIsClear=curve=>{
+      const samples=Array.from({length:25},(_,k)=>curve.point(k/24));
+      const bounds=samples.reduce((value,p)=>({left:Math.min(value.left,p.x),right:Math.max(value.right,p.x),
+        top:Math.min(value.top,p.y),bottom:Math.max(value.bottom,p.y)}),{left:Infinity,right:-Infinity,top:Infinity,bottom:-Infinity});
+      for(const n of obstacles) {
+        if(bounds.right<n.x-n.labelWidth/2-5 || bounds.left>n.x+n.labelWidth/2+5
+          || bounds.bottom<n.y-32 || bounds.top>n.y-24+n.boxHeight+5)continue;
+        for(let k=1;k<24;k++) {
+          const p=samples[k];
+          if(p.x>n.x-n.labelWidth/2-5 && p.x<n.x+n.labelWidth/2+5 && p.y>n.y-32 && p.y<n.y-24+n.boxHeight+5)return false;
+        }
+      }
+      for(const p of samples) {
+        if(link.limits && (Math.abs(p.x)>link.limits.width/2-5 || Math.abs(p.y)>link.limits.height/2-5))return false;
+        if(group && (Math.abs(p.x-group.x)>group.groupWidth/2-6 || Math.abs(p.y-group.y)>group.groupHeight/2-6))return false;
+      }
+      if(!checkSoftIntersections)return true;
+      for(const spoke of link.spokes||[]) {
+        if(spoke.b.id===a.id || spoke.b.id===b.id)continue;
+        for(let k=0;k<24;k++) {
+          const u=samples[k],v=samples[k+1],rx=v.x-u.x,ry=v.y-u.y,sx=spoke.b.x-spoke.a.x,sy=spoke.b.y-spoke.a.y,den=rx*sy-ry*sx;
+          if(Math.abs(den)<.00001)continue;
+          const px=spoke.a.x-u.x,py=spoke.a.y-u.y,t=(px*sy-py*sx)/den,w=(px*ry-py*rx)/den;
+          if(t>0 && t<1 && w>.05 && w<.95)return false;
+        }
+      }
+      const collisionSamples=Array.from({length:13},(_,k)=>curve.point((k+2)/16));
+      for(const cable of link.cables||[]) {
+        for(const anchor of cable.anchors||[]) {
+          if((anchor.id===a.id && a.current)||(anchor.id===b.id && b.current))continue;
+          const tip=anchor.id===a.id?{x:curve.sx,y:curve.sy}:anchor.id===b.id?{x:curve.ex,y:curve.ey}:null;
+          if(tip && Math.hypot(tip.x-anchor.point.x,tip.y-anchor.point.y)<16)return false;
+        }
+        const cableBounds=cable.bounds;
+        if(cableBounds && (cableBounds.right+16<bounds.left || cableBounds.left-16>bounds.right
+          || cableBounds.bottom+16<bounds.top || cableBounds.top-16>bounds.bottom))continue;
+        for(const p of collisionSamples) {
+          if(cable.shared.some(n=>Math.hypot(p.x-n.x,p.y-n.y)<42))continue;
+          for(const q of cable.samples)if(Math.hypot(p.x-q.x,p.y-q.y)<16)return false;
+        }
+      }
+      return true;
+    };
+    // Keep the last ports while they remain clear. During a drag, recalculating
+    // all 9x9 port pairs on every frame makes dense relationship graphs stall.
+    if(state.sourcePort!==undefined && state.targetPort!==undefined) {
+      const p=ports[state.sourcePort],q=ports[state.targetPort];
+      if(p && q) {
+        const bend=state.routeBend||0;
+        state.sourceAngle=smoothAngle(state.sourceAngle,Math.atan2(p.y,p.x),dx/distance,dy/distance);
+        state.targetAngle=smoothAngle(state.targetAngle,Math.atan2(q.y,q.x),-dx/distance,-dy/distance);
+        const previous=make({x:Math.cos(state.sourceAngle),y:Math.sin(state.sourceAngle)},
+          {x:Math.cos(state.targetAngle),y:Math.sin(state.targetAngle)},bend);
+        if(routeIsClear(previous)) {
+          state.routeBend=bend;
+          state.routingGeometry=saveGeometry();
+          return previous;
+        }
+        cached=false;
+      }
+    }
     let selected;
     ports.forEach((p,i)=>ports.forEach((q,j)=>{
       if(cached && (i!==state.sourcePort || j!==state.targetPort))return;
@@ -2753,19 +2828,11 @@
       }
     }));
     if(cached && !selected){delete state.sourcePort;delete state.targetPort;return relationGraphBookCable(a,b,link,group);}
-    const angle=(previous,desired,ux,uy)=>{
-      if(previous===undefined || Math.cos(previous)*ux+Math.sin(previous)*uy<-.1)return desired;
-      const delta=Math.atan2(Math.sin(desired-previous),Math.cos(desired-previous));
-      const next=previous+delta*.25;
-      // Never take the long way around a cover or rotate through its back side.
-      return Math.cos(next)*ux+Math.sin(next)*uy<-.05?desired:next;
-    };
-    state.sourceAngle=angle(state.sourceAngle,Math.atan2(selected.p.y,selected.p.x),dx/distance,dy/distance);
-    state.targetAngle=angle(state.targetAngle,Math.atan2(selected.q.y,selected.q.x),-dx/distance,-dy/distance);
+    state.sourceAngle=smoothAngle(state.sourceAngle,Math.atan2(selected.p.y,selected.p.x),dx/distance,dy/distance);
+    state.targetAngle=smoothAngle(state.targetAngle,Math.atan2(selected.q.y,selected.q.x),-dx/distance,-dy/distance);
     state.sourcePort=selected.i;state.targetPort=selected.j;
     state.routeBend=selected.bend;
-    if(!cached)state.routingGeometry=geometry.map(p=>({x:p.x,y:p.y,captionAbove:Boolean(p.captionAbove),
-      captionTop:p.captionTop||0,labelWidth:p.labelWidth||0,boxHeight:p.boxHeight||0}));
+    state.routingGeometry=saveGeometry();
     return make({x:Math.cos(state.sourceAngle),y:Math.sin(state.sourceAngle)},{x:Math.cos(state.targetAngle),y:Math.sin(state.targetAngle)},state.routeBend);
   }
 
@@ -2870,12 +2937,31 @@
         y: (1-u)*(1-u)*sy + 2*(1-u)*u*cy + u*u*ey }) };
   }
 
-  function relationGraphEndMark(curve,distance) {
+  function relationGraphCurveSamples(curve) {
     const samples=Array.from({length:41},(_,i)=>curve.point(i/40));
-    const lengths=samples.slice(1).map((p,i)=>Math.hypot(p.x-samples[i].x,p.y-samples[i].y));
-    const total=lengths.reduce((sum,value)=>sum+value,0);
-    let remaining=Math.min(distance,total*.65),t=1;
-    for(let i=39;i>=0;i--){if(remaining<=lengths[i]){t=(i+1-remaining/(lengths[i]||1))/40;break;}remaining-=lengths[i];}
+    const lengths=new Array(40),cumulative=new Array(41);cumulative[0]=0;
+    for(let i=0;i<40;i++) {
+      lengths[i]=Math.hypot(samples[i+1].x-samples[i].x,samples[i+1].y-samples[i].y);
+      cumulative[i+1]=cumulative[i]+lengths[i];
+    }
+    return {lengths,cumulative,total:cumulative[40]};
+  }
+
+  function relationGraphEndMark(curve,distance,path=relationGraphCurveSamples(curve)) {
+    const {lengths,cumulative,total}=path;
+    let t=1;
+    if(total>0) {
+      const target=total-Math.min(distance,total*.65);
+      let low=0,high=lengths.length-1;
+      while(low<high) {
+        const middle=(low+high)>>1;
+        if(target<=cumulative[middle+1])high=middle;
+        else low=middle+1;
+      }
+      const length=lengths[low]||1;
+      const part=Math.max(0,Math.min(1,(target-cumulative[low])/length));
+      t=(low+part)/lengths.length;
+    }
     const p=curve.point(t),before=curve.point(Math.max(0,t-.005)),after=curve.point(Math.min(1,t+.005));
     const length=Math.hypot(after.x-before.x,after.y-before.y)||1;
     return {...p,t,total,tx:(after.x-before.x)/length,ty:(after.y-before.y)/length};
@@ -3645,7 +3731,7 @@
             : l.kind ? {...l,state:relationRoutes.get(l.pairKey),frame:edgeFrame,idle:!drag && settleFrames===0,limits:{width,height},
               adjacency,neighbours:frameBookNodes,spokes:frameBookSpokes,obstacles:frameBookNodes} : l.spoke ? {
                 ...l,state:l,limits:{width,height},idle:!drag && settleFrames===0,adjacency,neighbours:frameBookNodes,
-                obstacles:frameBookNodes
+                obstacles:frameBookNodes,frame:edgeFrame
               } : l;
           const cableKey=l.pairKey||[a.id,b.id].sort().join(':');
           routing.cables=[];
@@ -3677,7 +3763,8 @@
           const label = linkLabelByEdge.get(l)||null;
           if (label) label.hidden = len <= ra + rb;
           if (len <= ra + rb) return;
-          const arrowMark=(l.kind || label)?relationGraphEndMark(curve,0):null;
+          const routeSamples=(l.kind || label)?relationGraphCurveSamples(curve):null;
+          const arrowMark=routeSamples?relationGraphEndMark(curve,0,routeSamples):null;
           const active = frameHighlightedNode;
           const hot = highlighted === a.id || highlighted === b.id
             || (active?.groupId && (active.groupId === l.groupId || active.groupId === b.id));
@@ -3697,7 +3784,7 @@
             if(label.getAttribute('aria-label')!==description){label.removeAttribute('aria-hidden');label.setAttribute('aria-label',description);}
             const labelWidth=label.offsetWidth,labelHeight=label.offsetHeight;
             const preferredDistance=arrowMark.total*.5;
-            const mark=relationGraphEndMark(curve,preferredDistance);
+            const mark=relationGraphEndMark(curve,preferredDistance,routeSamples);
             const preferred=(l.labelRoles?0:l.pairSize>1?14:0)+(l.targetSlot||0)*22;
             const clearance=Math.abs(mark.tx)*labelHeight/2+Math.abs(mark.ty)*labelWidth/2+8;
             const offsets=[preferred,-preferred,clearance,-clearance,clearance+12,-clearance-12,
@@ -3706,7 +3793,7 @@
             let position={x:mark.x,y:mark.y},chosenBox,best=Infinity,side=preferred;
             const distances=[preferredDistance,preferredDistance-22,preferredDistance+22,preferredDistance-44,preferredDistance+44,
               ...(l.labelRoles?[preferredDistance*.5,preferredDistance*1.3]:[])];
-            const anchors=distances.map(distance=>relationGraphEndMark(curve,distance));
+            const anchors=distances.map((distance,index)=>index===0?mark:relationGraphEndMark(curve,distance,routeSamples));
             for(let distanceIndex=0;distanceIndex<distances.length;distanceIndex++)for(const offset of offsets) {
               const distance=distances[distanceIndex],anchor=anchors[distanceIndex];
               const p={x:anchor.x-anchor.ty*offset,y:anchor.y+anchor.tx*offset};
