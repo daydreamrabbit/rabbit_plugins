@@ -3415,7 +3415,7 @@
     const frameShownById=new Map();
     const frameAdjacentNodesById=new Map();
     let softLinks=[],settleFrames=0,quietFrames=0,releasedSpring=null,settleAnchor=null,settleUntil=0;
-    const denseGraph=links.length>32,relationRoutes=new Map(),renderedCables=new Map();
+    const relationRoutes=new Map(),renderedCables=new Map();
     let renderedCableIndex=relationGraphSpatialIndex(),renderedLabelIndex=relationGraphSpatialIndex();let edgeFrame=0;
     const motionEpoch=performance.now()/1000;
     const profileEnabled=new URLSearchParams(location.search).has('rabbitGraphProfile');
@@ -3425,6 +3425,7 @@
     // when the browser inherits Windows' reduced-motion preference.
     const reducedMotion = !motionEnabled;
     const links = relationGraphLinks(nodes, topology);
+    const denseGraph=links.length>32;
     for(const n of nodes){n.extraRelations=relationGraphNodeRelations(n,links,nodes);n.peerDescriptions=relationGraphPeerDescriptions(n,links,nodes);}
     const adjacency={};
     for(const l of links)for(const [a,b] of [[l.source,l.target],[l.target,l.source]]) {

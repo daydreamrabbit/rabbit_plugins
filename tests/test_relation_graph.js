@@ -13,6 +13,8 @@ const source = fs.readFileSync(path.join(__dirname, '../detail/script.js'), 'utf
 }
 const layout = source.slice(source.indexOf('  function relationGraphLayout('), source.indexOf('  function loadRelationGraphEngine('));
 const topology = source.slice(source.indexOf('  function relationGraphTopology('), source.indexOf('  async function renderRelationGraph('));
+assert.ok(source.indexOf('const links = relationGraphLinks(nodes, topology);') < source.indexOf('const denseGraph=links.length>32;'),
+  'dense graph state is initialized after its link list to avoid a render-time TDZ error');
 const context = { relationLabels: { prequel: '전작', sequel: '후속작', side_story: '외전', spin_off: '스핀오프', main_story: '본편' } };
 const viewportSource=source.slice(source.indexOf('  function relationGraphViewport('),source.indexOf('  function loadRelationGraphEngine('));
 vm.createContext(context); vm.runInContext(layout + topology, context);
