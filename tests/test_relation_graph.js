@@ -790,6 +790,23 @@ for(const cable of [sharedForward,sharedReverse]) {
   } finally { delete context.Math; }
 }
 {
+  const a={id:'drag-perf-a',x:-180,y:0,labelWidth:80,boxHeight:100},b={id:'drag-perf-b',x:180,y:0,labelWidth:80,boxHeight:100};
+  const blocker={id:'drag-perf-blocker',x:0,y:0,labelWidth:190,boxHeight:110};
+  const state={},link={state,frame:1,idle:true,limits:{width:1000,height:800},obstacles:[blocker],spokes:[],cables:[],adjacency:{}};
+  const first=context.relationGraphBookCable(a,b,link,null);
+  assert.ok(state.sourcePort!==undefined && state.targetPort!==undefined,'initial route chooses stable cover ports');
+  const oldRoutePoint=first.point(.5);
+  blocker.x=oldRoutePoint.x;blocker.y=oldRoutePoint.y;a.x-=28;b.y+=24;
+  const measuredMath=Object.create(Math);let hypotCalls=0;
+  measuredMath.hypot=(...values)=>{hypotCalls++;return Math.hypot(...values);};context.Math=measuredMath;
+  try {
+    const dragged=context.relationGraphBookCable(a,b,{...link,frame:2,idle:false},null);
+    assert.ok(hypotCalls<12,'held drag reuses routed ports instead of resampling collisions or searching port pairs');
+    assert.ok(Math.hypot(dragged.sx-a.x,dragged.sy-a.y)>25 && Math.hypot(dragged.sx-a.x,dragged.sy-a.y)<27,
+      'cached drag route still attaches to the moved cover ring');
+  } finally { delete context.Math; }
+}
+{
   const rects=Array.from({length:400},(_,i)=>{const x=(i%20)*260-2470,y=Math.floor(i/20)*260-2470;
     return {id:i,left:x-35,right:x+35,top:y-45,bottom:y+55};});
   const index=context.relationGraphSpatialIndex(rects),query={left:-380,right:420,top:-280,bottom:360};

@@ -2715,6 +2715,25 @@
       const next=previous+delta*.25;
       return Math.cos(next)*ux+Math.sin(next)*uy<-.05?desired:next;
     };
+    // While a pointer is held, keep the validated ports and only move their
+    // endpoints. Full collision sampling and the 9x9 port search can exceed a
+    // frame budget on dense graphs; revalidate once the drag has settled.
+    if(link.idle===false) {
+      if(state.sourcePort!==undefined && state.targetPort!==undefined) {
+        const p=ports[state.sourcePort],q=ports[state.targetPort];
+        if(p && q) {
+          state.sourceAngle=smoothAngle(state.sourceAngle,Math.atan2(p.y,p.x),dx/distance,dy/distance);
+          state.targetAngle=smoothAngle(state.targetAngle,Math.atan2(q.y,q.x),-dx/distance,-dy/distance);
+          state.routingGeometry=saveGeometry();
+          return make({x:Math.cos(state.sourceAngle),y:Math.sin(state.sourceAngle)},
+            {x:Math.cos(state.targetAngle),y:Math.sin(state.targetAngle)},state.routeBend||0);
+        }
+      }
+      if(state.straight===true) {
+        state.routingGeometry=saveGeometry();
+        return straight;
+      }
+    }
     const checkSoftIntersections=link.frame===undefined || !unchanged || link.frame%4===0;
     // Idle drift moves covers by tiny increments. Recheck a retained route on
     // the existing soft-intersection cadence; otherwise avoid rebuilding both
