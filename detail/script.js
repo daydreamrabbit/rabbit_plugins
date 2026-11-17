@@ -2431,11 +2431,24 @@
       y:noise(time/11+seed%17,seed+19)*.62+noise(time/22,seed+31)*.18};
   }
 
-  function relationGraphCanDrift(n) {
-    // Gentle idle floating belongs to books inside a soft group only.
-    // Recommendation spokes keep their cable pulse, but their endpoints stay
-    // still so the cable itself does not wobble while nobody is dragging.
-    return Boolean(n.groupId && !n.current && !n.group);
+  function relationGraphExternalCableAnchors(nodes,links) {
+    const byId=new Map(nodes.map(n=>[n.id,n])),anchors=new Set();
+    const idOf=value=>typeof value==='object'&&value?value.id:value;
+    for(const link of links) {
+      if(!link.kind)continue;
+      const source=byId.get(idOf(link.source)),target=byId.get(idOf(link.target));
+      if(!source || !target || source.groupId===target.groupId)continue;
+      if(source.groupId)anchors.add(source.id);
+      if(target.groupId)anchors.add(target.id);
+    }
+    return anchors;
+  }
+
+  function relationGraphCanDrift(n,externalCableAnchors=new Set()) {
+    // Group members that anchor a relationship outside their group stay still
+    // at idle. Letting those endpoints float makes the external cable visibly
+    // wobble even when no one is interacting with the graph.
+    return Boolean(n.groupId && !n.current && !n.group && !externalCableAnchors.has(n.id));
   }
 
   function relationGraphReconcileDrag(spring,before) {
@@ -3566,6 +3579,7 @@
     // when the browser inherits Windows' reduced-motion preference.
     const reducedMotion = !motionEnabled;
     const links = relationGraphLinks(nodes, topology);
+    const externalCableAnchors=relationGraphExternalCableAnchors(nodes,links);
     const denseGraph=links.length>32;
     for(const n of nodes){n.extraRelations=relationGraphNodeRelations(n,links,nodes);n.peerDescriptions=relationGraphPeerDescriptions(n,links,nodes);}
     const adjacency={};
@@ -4064,7 +4078,7 @@
           stage.dataset.settling=String(Boolean(drag?.moved || settleFrames>0));
           const time=performance.now()/1000-motionEpoch;
           for(const n of nodes.filter(n=>!n.group)) {
-            if(reducedMotion || !relationGraphCanDrift(n) || drag?.n===n){n.floatX=n.floatY=0;continue;}
+            if(reducedMotion || !relationGraphCanDrift(n,externalCableAnchors) || drag?.n===n){n.floatX=n.floatY=0;continue;}
             n.floatStrength+=((drag || settleFrames>0?0:1)-n.floatStrength)*.025;
             const drift=relationGraphDrift(n.id,time);
             n.floatX=drift.x*n.floatStrength;n.floatY=drift.y*n.floatStrength;

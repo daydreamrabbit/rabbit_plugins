@@ -570,7 +570,21 @@ for(const id of ['0','1','7','12'])for(let time=0;time<120;time+=.1) {
 }
 assert.notDeepEqual(context.relationGraphDrift('0',10),context.relationGraphDrift('1',10),'works drift independently');
 assert.equal(context.relationGraphCanDrift({id:'wan'}),false,'ordinary spin-off does not move its cable at idle');
-assert.equal(context.relationGraphCanDrift({groupId:'anthology'}),true,'soft group members retain gentle floating');
+const cableNodes=[
+  {id:'ice'}, {id:'short-story'},
+  {id:'chapter-1',groupId:'adaptations'}, {id:'chapter-2',groupId:'adaptations'},
+  {id:'chapter-3',groupId:'adaptations'},
+];
+const cableAnchors=context.relationGraphExternalCableAnchors(cableNodes,[
+  {source:'ice',target:'chapter-1',kind:'prequel'},
+  {source:'chapter-1',target:'chapter-2',kind:'sequel'},
+  {source:'short-story',target:'chapter-2',kind:'side_story'},
+  {source:'chapter-2',target:'chapter-3',spoke:true},
+]);
+assert.equal(context.relationGraphCanDrift(cableNodes[2],cableAnchors),false,'an adaptation chapter connected to an outside work stays still so its cable does not wobble');
+assert.equal(context.relationGraphCanDrift(cableNodes[3],cableAnchors),false,'a second externally connected chapter also stays still');
+assert.equal(context.relationGraphCanDrift(cableNodes[4],cableAnchors),true,'unanchored members retain gentle floating');
+assert.equal(cableAnchors.has('chapter-3'),false,'group-internal edges and layout spokes do not freeze the remaining group');
 assert.equal(context.relationGraphCanDrift({id:'recommendation'},true),false,'recommendation works stay fixed instead of adding motion cost');
 assert.equal(context.relationGraphCanDrift({groupId:'family',current:true}),false,'current work has no automatic drift');
 {
