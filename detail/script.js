@@ -2450,6 +2450,14 @@
     return anchoredExternal?{speed:.000008,trail:.07}:{speed:.00003,trail:.12};
   }
 
+  function relationGraphEdgeColors(link,a,b,accentColor='') {
+    const colorA=a.inkColor||accentColor,colorB=b.inkColor||accentColor;
+    const crossesGroup=Boolean(link.kind && Boolean(a.groupId)!==Boolean(b.groupId));
+    const outside=crossesGroup?(a.groupId?b:a):null;
+    const relation=outside?.inkColor||colorB;
+    return crossesGroup?{start:relation,end:relation,relation}:{start:colorA,end:colorB,relation:colorB};
+  }
+
   function relationGraphCanDrift(n,externalCableAnchors=new Set()) {
     // Group members that anchor a relationship outside their group stay still
     // at idle. Letting those endpoints float makes the external cable visibly
@@ -3995,14 +4003,15 @@
           const active = frameHighlightedNode;
           const hot = highlighted === a.id || highlighted === b.id
             || (active?.groupId && (active.groupId === l.groupId || active.groupId === b.id || active.groupId === l.aggregateGroupId));
-          const relationColor = b.inkColor || accentColor;
+          const edgeColors=relationGraphEdgeColors(l,a,b,accentColor);
+          const relationColor=edgeColors.relation;
           c.save(); c.beginPath(); c.moveTo(sx, sy); c.lineJoin = 'round'; c.lineCap = 'round';
           if (points) for (const p of points.slice(1)) c.lineTo(p.x, p.y);
           else if(c1)c.bezierCurveTo(c1.x,c1.y,c2.x,c2.y,ex,ey);
           else c.quadraticCurveTo(cx, cy, ex, ey);
           c.strokeStyle = relationColor; c.globalAlpha = l.pairIndex>0?0:hot ? .18 : .07; c.lineWidth = 6; c.stroke();
           const gradient = c.createLinearGradient(sx, sy, ex, ey);
-          gradient.addColorStop(0, a.inkColor || accentColor); gradient.addColorStop(1, relationColor);
+          gradient.addColorStop(0, edgeColors.start); gradient.addColorStop(1, edgeColors.end);
           c.strokeStyle = gradient; c.globalAlpha = l.pairIndex>0?0:hot ? .98 : .68; c.lineWidth = hot ? 2.1 : 1.35; c.stroke();
           if (label) {
             const nearbyLabelObstacles=frameLabelObstacleIndex?frameLabelObstacleIndex.query(routeBounds):frameLabelObstacles;
