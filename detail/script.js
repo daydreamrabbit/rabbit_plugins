@@ -2605,6 +2605,29 @@
 
   const relationGraphCablePorts=Array.from({length:9},(_,i)=>Object.freeze({x:Math.cos(-i*Math.PI/8),y:Math.sin(-i*Math.PI/8)}));
 
+  function relationGraphSpatialIndex(items=[],boundsOf=item=>item,cellSize=256) {
+    const cells=new Map(),all=new Set(),broad=[],boundsByItem=new Map();
+    const cellKeys=bounds=>{
+      const x0=Math.floor(bounds.left/cellSize),x1=Math.floor(bounds.right/cellSize);
+      const y0=Math.floor(bounds.top/cellSize),y1=Math.floor(bounds.bottom/cellSize);
+      if((x1-x0+1)*(y1-y0+1)>64)return null;
+      const keys=[];for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)keys.push(y+':'+x);return keys;
+    };
+    const add=(item,bounds=boundsOf(item))=>{
+      if(!bounds)return;all.add(item);boundsByItem.set(item,bounds);
+      const keys=cellKeys(bounds);if(!keys){broad.push(item);return;}
+      for(const key of keys){let bucket=cells.get(key);if(!bucket)cells.set(key,bucket=new Set());bucket.add(item);}
+    };
+    for(const item of items)add(item);
+    const query=bounds=>{
+      const candidates=new Set(broad),keys=cellKeys(bounds);
+      if(!keys){for(const item of all)candidates.add(item);}
+      else for(const key of keys)for(const item of cells.get(key)||[])candidates.add(item);
+      return [...candidates].filter(item=>{const b=boundsByItem.get(item);return b&&b.right>=bounds.left&&b.left<=bounds.right&&b.bottom>=bounds.top&&b.top<=bounds.bottom;});
+    };
+    return {add,query,size:all.size};
+  }
+
   function relationGraphBookCable(a,b,link,group) {
     // End each cable on the visible cover ring, rather than outside its halo.
     const dx=b.x-a.x,dy=b.y-a.y,distance=Math.hypot(dx,dy)||1,ra=a.current?32:26,rb=b.current?32:26;
@@ -3388,10 +3411,12 @@
     let width = 0, height = 0, availableWidth=0,displayScale=1, layout = null, lineColor = '', accentColor = '', suppressClick = false;
     let highlighted = null, stageVisible = true, labelBounds = [], frameLabelObstacles = [], graphFont = '';
     let frameShownNodes=[],frameBookNodes=[],frameBookSpokes=[],frameHighlightedNode=null;
+    let frameBookNodeIndex=null,frameBookSpokeIndex=null,frameLabelObstacleIndex=null;
     const frameShownById=new Map();
     const frameAdjacentNodesById=new Map();
     let softLinks=[],settleFrames=0,quietFrames=0,releasedSpring=null,settleAnchor=null,settleUntil=0;
-    const relationRoutes=new Map(),renderedCables=new Map();let edgeFrame=0;
+    const denseGraph=links.length>32,relationRoutes=new Map(),renderedCables=new Map();
+    let renderedCableIndex=relationGraphSpatialIndex(),renderedLabelIndex=relationGraphSpatialIndex();let edgeFrame=0;
     const motionEpoch=performance.now()/1000;
     const profileEnabled=new URLSearchParams(location.search).has('rabbitGraphProfile');
     const profile={idle:[],drag:[],last:0,mode:'',published:0};
@@ -3749,23 +3774,31 @@
           const a = frameShownById.get(l.source.id)||shown(l.source), b = frameShownById.get(l.target.id)||shown(l.target), dx = b.x - a.x, dy = b.y - a.y;
           const group = l.groupId ? frameShownById.get(l.groupId)||null : null;
           if(l.kind && !relationRoutes.has(l.pairKey))relationRoutes.set(l.pairKey,{});
-          const routing = b.group ? {...l,state:l,idle:!drag && settleFrames===0,
-              neighbours:frameAdjacentNodesById.get(a.id)||[],
-              obstacles:nodes.filter(n=>!n.group && n.id!==a.id && n.groupId!==b.id).map(shown)}
-            : l.kind ? {...l,state:relationRoutes.get(l.pairKey),frame:edgeFrame,idle:!drag && settleFrames===0,limits:{width,height},
-              adjacency,neighbours:frameBookNodes,spokes:frameBookSpokes,obstacles:frameBookNodes} : l.spoke ? {
-                ...l,state:l,limits:{width,height},idle:!drag && settleFrames===0,adjacency,neighbours:frameBookNodes,
-                obstacles:frameBookNodes,frame:edgeFrame
-              } : l;
-          const cableKey=l.pairKey||[a.id,b.id].sort().join(':');
-          routing.cables=[];
           const routePadding=176;
           const routeBounds={
             left:Math.min(a.x,b.x)-routePadding,right:Math.max(a.x,b.x)+routePadding,
             top:Math.min(a.y,b.y)-routePadding,bottom:Math.max(a.y,b.y)+routePadding,
           };
-          for(const [key,cable] of renderedCables) {
-            if(key===cableKey)continue;
+          const obstacleBounds=b.group?{left:Math.min(a.x,b.x)-Math.max(routePadding,b.groupWidth/2+120),
+            right:Math.max(a.x,b.x)+Math.max(routePadding,b.groupWidth/2+120),
+            top:Math.min(a.y,b.y)-Math.max(routePadding,b.groupHeight/2+120),
+            bottom:Math.max(a.y,b.y)+Math.max(routePadding,b.groupHeight/2+120)}:routeBounds;
+          const localNodes=frameBookNodeIndex?frameBookNodeIndex.query(obstacleBounds):frameBookNodes;
+          const localSpokes=frameBookSpokeIndex?frameBookSpokeIndex.query(routeBounds):frameBookSpokes;
+          const localNeighbours=[...(frameAdjacentNodesById.get(a.id)||[]),...(frameAdjacentNodesById.get(b.id)||[])];
+          const routing = b.group ? {...l,state:l,idle:!drag && settleFrames===0,
+              neighbours:frameAdjacentNodesById.get(a.id)||[],
+              obstacles:localNodes.filter(n=>n.id!==a.id && n.groupId!==b.id)}
+            : l.kind ? {...l,state:relationRoutes.get(l.pairKey),frame:edgeFrame,idle:!drag && settleFrames===0,limits:{width,height},
+              adjacency,neighbours:localNeighbours,spokes:localSpokes,obstacles:localNodes} : l.spoke ? {
+                ...l,state:l,limits:{width,height},idle:!drag && settleFrames===0,adjacency,neighbours:localNeighbours,
+                obstacles:localNodes,frame:edgeFrame
+              } : l;
+          const cableKey=l.pairKey||[a.id,b.id].sort().join(':');
+          routing.cables=[];
+          const nearbyCables=denseGraph?renderedCableIndex.query(routeBounds):renderedCables.values();
+          for(const cable of nearbyCables) {
+            if(cable.key===cableKey)continue;
             const bounds=cable.bounds;
             if(bounds && (bounds.right<routeBounds.left || bounds.left>routeBounds.right
               || bounds.bottom<routeBounds.top || bounds.top>routeBounds.bottom))continue;
@@ -3781,12 +3814,14 @@
               bounds.left=Math.min(bounds.left,p.x);bounds.right=Math.max(bounds.right,p.x);
               bounds.top=Math.min(bounds.top,p.y);bounds.bottom=Math.max(bounds.bottom,p.y);
             }
-            renderedCables.set(cableKey,{ids:[a.id,b.id],samples,bounds});
+            const cable={key:cableKey,ids:[a.id,b.id],samples,bounds};
+            renderedCables.set(cableKey,cable);if(denseGraph)renderedCableIndex.add(cable);
           }
           const { sx, sy, ex, ey, cx, cy, c1, c2, ra, rb, len, point, points } = curve;
           const label = linkLabelByEdge.get(l)||null;
           if (label) label.hidden = len <= ra + rb;
           if (len <= ra + rb) return;
+          const nearbyPriorLabels=denseGraph?renderedLabelIndex.query(routeBounds):labelBounds;
           const routeSamples=label?relationGraphCurveSamples(curve):null;
           const arrowMark=routeSamples?relationGraphEndMark(curve,0,routeSamples):l.kind?relationGraphArrowMark(curve):null;
           const active = frameHighlightedNode;
@@ -3802,6 +3837,7 @@
           gradient.addColorStop(0, a.inkColor || accentColor); gradient.addColorStop(1, relationColor);
           c.strokeStyle = gradient; c.globalAlpha = l.pairIndex>0?0:hot ? .98 : .68; c.lineWidth = hot ? 2.1 : 1.35; c.stroke();
           if (label) {
+            const nearbyLabelObstacles=frameLabelObstacleIndex?frameLabelObstacleIndex.query(routeBounds):frameLabelObstacles;
             if(!l.labelRoles && label.textContent!==l.label)label.textContent=l.label;
             label.style.whiteSpace=l.labelRoles?'normal':'nowrap';label.style.borderColor=relationColor;
             const description=l.labelRoles?l.labelRoles.map(item=>item.role+': '+item.title).join(' / '):a.label+' → '+b.label+' · '+l.label;
@@ -3823,9 +3859,9 @@
               const p={x:anchor.x-anchor.ty*offset,y:anchor.y+anchor.tx*offset};
               const box={left:p.x-labelWidth/2,right:p.x+labelWidth/2,top:p.y-labelHeight/2,bottom:p.y+labelHeight/2};
               let conflicts=0;
-              for(const o of frameLabelObstacles)conflicts+=Math.max(0,Math.min(box.right,o.right+3)-Math.max(box.left,o.left-3))
+              for(const o of nearbyLabelObstacles)conflicts+=Math.max(0,Math.min(box.right,o.right+3)-Math.max(box.left,o.left-3))
                 *Math.max(0,Math.min(box.bottom,o.bottom+3)-Math.max(box.top,o.top-3));
-              for(const o of labelBounds)conflicts+=Math.max(0,Math.min(box.right,o.right+3)-Math.max(box.left,o.left-3))
+              for(const o of nearbyPriorLabels)conflicts+=Math.max(0,Math.min(box.right,o.right+3)-Math.max(box.left,o.left-3))
                 *Math.max(0,Math.min(box.bottom,o.bottom+3)-Math.max(box.top,o.top-3));
               conflicts+=Math.max(0,Math.min(box.right,arrowObstacle.right+3)-Math.max(box.left,arrowObstacle.left-3))
                 *Math.max(0,Math.min(box.bottom,arrowObstacle.bottom+3)-Math.max(box.top,arrowObstacle.top-3));
@@ -3834,7 +3870,7 @@
               const score=conflicts*10+Math.abs(offset-preferred)+Math.abs(distance-preferredDistance)*.3+(outside?100000:0)+(beyondGroup?10000:0);
               if(score<best){best=score;position=p;chosenBox=box;side=offset;}
             }
-            l.labelSide=side;if(chosenBox)labelBounds.push(chosenBox);
+            l.labelSide=side;if(chosenBox){labelBounds.push(chosenBox);if(denseGraph)renderedLabelIndex.add(chosenBox);}
             const screen=graph.graph2ScreenCoords(position.x,position.y);
             label.style.transform=`translate(${screen.x}px, ${screen.y}px) translate(-50%, -50%)`;
           }
@@ -3863,6 +3899,8 @@
         .onRenderFramePre(() => {
           labelBounds = [];
           renderedCables.clear();
+          renderedCableIndex=relationGraphSpatialIndex();
+          renderedLabelIndex=relationGraphSpatialIndex();
           edgeFrame++;
           const spring=drag?.moved?drag:releasedSpring;
           if(spring && relationGraphDragSpring(spring.n,spring,reducedMotion,{width,height}) && spring===releasedSpring)releasedSpring=null;
@@ -3894,6 +3932,13 @@
             .map(n=>({a:spokeOrigin,b:n}));
           frameHighlightedNode=frameShownById.get(highlighted)||null;
           frameLabelObstacles=relationGraphLabelObstacles(frameShownNodes);
+          frameBookNodeIndex=frameBookNodes.length>24?relationGraphSpatialIndex(frameBookNodes,n=>({
+            left:n.x-(n.labelWidth||112)/2-80,right:n.x+(n.labelWidth||112)/2+80,
+            top:n.y-Math.max(80,(n.boxHeight||104)+40),bottom:n.y+(n.current?30:24)+(n.boxHeight||104)+40})):null;
+          frameBookSpokeIndex=frameBookSpokes.length>24?relationGraphSpatialIndex(frameBookSpokes,s=>({
+            left:Math.min(s.a.x,s.b.x)-8,right:Math.max(s.a.x,s.b.x)+8,
+            top:Math.min(s.a.y,s.b.y)-8,bottom:Math.max(s.a.y,s.b.y)+8})):null;
+          frameLabelObstacleIndex=frameLabelObstacles.length>48?relationGraphSpatialIndex(frameLabelObstacles):null;
         })
         .onRenderFramePost(() => {
           if (!root.isConnected) { controller.destroy(); return; }

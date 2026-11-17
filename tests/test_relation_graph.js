@@ -763,6 +763,22 @@ for(const cable of [sharedForward,sharedReverse]) {
     assert.ok(hypotCalls<8,'idle direct cables also bypass repeated curve and obstacle sampling');
   } finally { delete context.Math; }
 }
+{
+  const rects=Array.from({length:400},(_,i)=>{const x=(i%20)*260-2470,y=Math.floor(i/20)*260-2470;
+    return {id:i,left:x-35,right:x+35,top:y-45,bottom:y+55};});
+  const index=context.relationGraphSpatialIndex(rects),query={left:-380,right:420,top:-280,bottom:360};
+  const actual=index.query(query).map(item=>item.id).sort((a,b)=>a-b);
+  const expected=rects.filter(item=>item.right>=query.left&&item.left<=query.right&&item.bottom>=query.top&&item.top<=query.bottom).map(item=>item.id).sort((a,b)=>a-b);
+  assert.deepEqual(actual,expected,'spatial broadphase preserves all and only intersecting graph obstacles');
+  assert.ok(actual.length<rects.length*.1,'dense graph broadphase excludes distant node and cable work');
+  let candidates=0;
+  for(const item of rects){const bounds={left:item.left-176,right:item.right+176,top:item.top-176,bottom:item.bottom+176};
+    const local=index.query(bounds),brute=rects.filter(peer=>peer.right>=bounds.left&&peer.left<=bounds.right&&peer.bottom>=bounds.top&&peer.top<=bounds.bottom);
+    assert.deepEqual(local.map(peer=>peer.id).sort((a,b)=>a-b),brute.map(peer=>peer.id).sort((a,b)=>a-b),'per-edge candidates match brute-force collision bounds');
+    candidates+=local.length;
+  }
+  assert.ok(candidates<rects.length*rects.length*.12,'dense graph performs local rather than all-pairs candidate scans');
+}
 for(const [a,b] of [[{id:'0',x:0,y:0},{id:'1',x:0,y:360}],[{id:'0',x:0,y:360},{id:'1',x:0,y:0}]]) {
   const cable=context.relationGraphCurve(a,b,null,{kind:'main_story'});
   assert.ok(Math.abs(Math.hypot(cable.ex-b.x,cable.ey-b.y)-26)<1e-9,'both directions attach to the cover ring');
