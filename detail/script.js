@@ -1490,7 +1490,10 @@
     const availableChapterCount = coverage.present || books.length;
     const chapterTarget = chapterTargetCount();
     const availableVolumeCount = Number(meta.publication_available_volume_count) || 0;
-    const totalVolumes = hasVolumesAndChapters ? groups.length : media ? (count > 0 ? count : books.length) : availableVolumeCount || books.length;
+    // Holdings count is the number of owned files (including 00권 and files
+    // without a parsed volume number). Keep unique numbered volumes separate
+    // for publication coverage and missing-volume status.
+    const holdingsCount = hasVolumesAndChapters ? groups.length : media ? (count > 0 ? count : books.length) : books.length;
     const pureVolumes = !media && !onlyChapters && !hasVolumesAndChapters;
     const explicitStatus = String(meta.publication_status_label || '').trim();
     const hasExplicitStatus = explicitStatus && explicitStatus !== '알 수 없음';
@@ -1499,7 +1502,7 @@
       : type === 'audiobook' ? '트랙 수' : type === 'video' ? '에피소드 수' : '보유 권수';
     const rows = [];
     if (books.length < 2) rows.push(['파일포맷', formats.join(' / ') || '—']);
-    if (!onlyChapters && (media || !isStandalone())) rows.push([countLabel, String(totalVolumes)]);
+    if (!onlyChapters && (media || !isStandalone())) rows.push([countLabel, String(holdingsCount)]);
     const chapters = Number(meta.manual_chapter_count || (['완결', '연재중단'].includes(explicitStatus) ? meta.publication_coverage?.total : 0) || 0);
     if (Number.isInteger(chapters) && chapters > 0) {
       rows.push(['회차 수', String(chapters)]);
