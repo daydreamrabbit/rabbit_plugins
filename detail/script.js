@@ -194,8 +194,15 @@
     return Number.isFinite(value) && value > 0 ? value : 0;
   }
 
+  function metadataVolumeNumber(book, key) {
+    const raw = book?.[key];
+    if (raw == null || String(raw).trim() === '') return null;
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  }
+
   function volumeNumber(book) {
-    return metadataNumber(book, 'volume') || metadataNumber(book, 'document_volume_index');
+    return metadataVolumeNumber(book, 'volume') ?? metadataVolumeNumber(book, 'document_volume_index');
   }
 
   function seriesVolumeSortNumber(book) {
@@ -203,16 +210,21 @@
     // as 4.5 even when a scanned database field contains a rounded integer.
     const label = fileDisplayLabel(book, 0, { unit: 'volume' });
     const match = String(label || '').match(/(?:제\s*)?(\d+(?:\.\d+)?)\s*권/iu);
-    if (match) return Number(match[1]) || 0;
+    if (match) {
+      const number = Number(match[1]);
+      return Number.isFinite(number) && number >= 0 ? number : null;
+    }
     return volumeNumber(book);
   }
 
   function compareSeriesVolumeBooks(a, b) {
     const aVolume = seriesVolumeSortNumber(a);
     const bVolume = seriesVolumeSortNumber(b);
-    if (aVolume > 0 && bVolume > 0 && aVolume !== bVolume) return aVolume - bVolume;
-    if (aVolume > 0 && !bVolume) return -1;
-    if (!aVolume && bVolume > 0) return 1;
+    const aKnown = aVolume != null;
+    const bKnown = bVolume != null;
+    if (aKnown && bKnown && aVolume !== bVolume) return aVolume - bVolume;
+    if (aKnown && !bKnown) return -1;
+    if (!aKnown && bKnown) return 1;
     return 0;
   }
 
@@ -220,8 +232,8 @@
     if (chapterOnlyMode() && chapterNumber(book) > 0) {
       return numberText(chapterNumber(book)) + '화';
     }
-    const volume = media ? 0 : seriesVolumeSortNumber(book);
-    return String(volume > 0 ? numberText(volume) : index + 1).padStart(2, '0');
+    const volume = media ? null : seriesVolumeSortNumber(book);
+    return String(volume != null ? numberText(volume) : index + 1).padStart(2, '0');
   }
 
   function chapterNumber(book) {
@@ -237,7 +249,7 @@
   }
 
   function hasVolumeMetadata() {
-    return books.some((book) => volumeNumber(book) > 0);
+    return books.some((book) => volumeNumber(book) != null);
   }
 
   function chapterOnlyMode() {
@@ -252,13 +264,13 @@
     const groups = new Map();
     books.forEach((book, index) => {
       const volume = seriesVolumeSortNumber(book);
-      const key = volume > 0 ? String(volume) : 'book:' + String(book.id || index);
+      const key = volume != null ? String(volume) : 'book:' + String(book.id || index);
       if (!groups.has(key)) groups.set(key, { volume, books: [] });
       groups.get(key).books.push(book);
     });
     return [...groups.values()].sort((a, b) => {
-      if (!a.volume) return 1;
-      if (!b.volume) return -1;
+      if (a.volume == null) return b.volume == null ? 0 : 1;
+      if (b.volume == null) return -1;
       return a.volume - b.volume;
     });
   }
@@ -1331,7 +1343,7 @@
     const toggle = node('button', 'ds-volume-toggle');
     toggle.type = 'button';
     const volumeLabel = fileDisplayLabel(representative, index, { unit: 'volume' })
-      || (group.volume > 0 ? numberText(group.volume) + '권' : title(representative));
+      || (group.volume != null ? numberText(group.volume).padStart(2, '0') + '권' : title(representative));
     toggle.setAttribute('aria-label', volumeLabel + ' 화 목록 열기');
     toggle.setAttribute('aria-expanded', 'false');
     const art = image(representative.cover_image, volumeLabel);

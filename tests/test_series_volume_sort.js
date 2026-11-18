@@ -5,15 +5,15 @@ const assert = require('assert');
 const code = fs.readFileSync(require('path').join(__dirname, '../detail/script.js'), 'utf8');
 const labelStart = code.indexOf('  const title = (book) => {');
 const labelEnd = code.indexOf('  const num = ', labelStart);
-const start = code.indexOf('  function seriesVolumeSortNumber(');
-const end = code.indexOf('  function chapterNumber(', start);
+const start = code.indexOf('  function metadataNumber(');
+const end = code.indexOf('  function chapterCoverage(', start);
 assert.ok(labelStart >= 0 && labelEnd > labelStart, 'book label helpers should be present');
 assert.ok(start >= 0 && end > start, 'series volume comparator should be present');
 
 const context = {
-  volumeNumber: (book) => Number(book.volume || book.document_volume_index || 0),
+  books: [],
+  media: false,
   chapterNumber: (book) => Number(book.number || 0),
-  chapterOnlyMode: () => false,
 };
 vm.createContext(context);
 vm.runInContext(code.slice(labelStart, labelEnd) + code.slice(start, end)
@@ -49,9 +49,39 @@ const ordered = books
   .map(({ book }) => book.id);
 
 assert.deepStrictEqual(ordered, [2, 1, 3], '4권 must precede 4.5권 and 5권');
+
+const zeroVolume = {
+  id: 4, file_path: '/books/작품 00권.epub', document_volume_index: null,
+};
+const oneVolume = {
+  id: 5, file_path: '/books/작품 01권.epub', document_volume_index: 1,
+};
+const unknownVolume = { id: 6, file_path: '/books/작품 외전.epub' };
+const twelveKingdomsZero = {
+  id: 7, file_path: '/books/십이국기 00권：마성의 아이.epub', document_volume_index: 1,
+};
+assert.strictEqual(context.seriesVolumeSortNumber(twelveKingdomsZero), 0,
+  'the explicit 00권 filename takes priority over a conflicting stored index');
+assert.strictEqual(context.volumeNumber({ volume: 0, document_volume_index: 1 }), 0,
+  'a stored numeric zero is not replaced by a positive fallback');
+assert.strictEqual(context.volumeNumber({}), null, 'missing volume metadata stays unknown');
+assert.strictEqual(context.seriesVolumeSortNumber(zeroVolume), 0,
+  '00권 from the filename is an explicit volume zero');
+assert.strictEqual(context.seriesCardNumber(zeroVolume, 0), '00',
+  'an explicit zero volume keeps its 00 card number');
+const zeroOrder = [oneVolume, zeroVolume, unknownVolume]
+  .map((book, index) => ({ book, index }))
+  .sort((a, b) => context.compareSeriesVolumeBooks(a.book, b.book) || a.index - b.index)
+  .map(({ book }) => book.id);
+assert.deepStrictEqual(zeroOrder, [4, 5, 6],
+  'volume zero sorts before positive volumes and unknown-volume books');
+context.books = [oneVolume, unknownVolume, zeroVolume];
+const grouped = context.volumeGroups().map((group) => [group.volume, group.books.map((book) => book.id)]);
+assert.strictEqual(JSON.stringify(grouped), JSON.stringify([[0, [4]], [1, [5]], [null, [6]]]),
+  'zero-volume groups sort first and unknown groups stay last');
 assert.ok(code.includes('const seriesBooks = media ? books : books')
   && code.includes('.sort((a, b) => compareSeriesVolumeBooks(a.book, b.book) || a.index - b.index)'),
   'the series carousel should apply the volume comparator');
 assert.ok(code.includes('const volume = seriesVolumeSortNumber(book);'),
   'grouped volume cards should also distinguish decimal volume labels');
-console.log('PASS embedded Title labels, user aliases, filename fallback and decimal volume order');
+console.log('PASS labels, aliases, decimal order and explicit volume zero');
